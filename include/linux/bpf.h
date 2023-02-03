@@ -2422,13 +2422,20 @@ static inline bool bpf_allow_uninit_stack(const struct bpf_token *token)
 	return bpf_token_capable(token, CAP_PERFMON);
 }
 
+extern int bpf_spec_v1;
+extern int bpf_spec_v4;
+
 static inline bool bpf_bypass_spec_v1(const struct bpf_token *token)
 {
+	if (bpf_spec_v1 == 2) return false;
+	if (bpf_spec_v1 == 0) return true;
 	return cpu_mitigations_off() || bpf_token_capable(token, CAP_PERFMON);
 }
 
 static inline bool bpf_bypass_spec_v4(const struct bpf_token *token)
 {
+	if (bpf_spec_v4 == 2) return false;
+	if (bpf_spec_v4 == 0) return true;
 #ifdef ARM64
 	/* In case of arm64, we rely on the firmware mitigation of Speculative
 	 * Store Bypass as controlled via the ssbd kernel parameter. Whenever
