@@ -58,6 +58,9 @@ static DEFINE_SPINLOCK(link_idr_lock);
 int sysctl_unprivileged_bpf_disabled __read_mostly =
 	IS_BUILTIN(CONFIG_BPF_UNPRIV_DEFAULT_OFF) ? 2 : 0;
 
+int bpf_spec_v1 = 0;
+int bpf_spec_v4 = 0;
+
 static const struct bpf_map_ops * const bpf_map_types[] = {
 #define BPF_PROG_TYPE(_id, _name, prog_ctx_type, kern_ctx_type)
 #define BPF_MAP_TYPE(_id, _ops) \
@@ -5481,7 +5484,25 @@ static struct ctl_table bpf_syscall_table[] = {
 		.mode		= 0644,
 		.proc_handler	= bpf_stats_handler,
 	},
-	{ }
+	{
+		.procname	= "bpf_spec_v1",
+		.data		= &bpf_spec_v1,
+		.maxlen		= sizeof(bpf_spec_v1),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec, /* TODO: minmax with the following causes kernel panic */
+		/* .extra1		= SYSCTL_ZERO, */
+		/* .extra2		= SYSCTL_ONE, */
+	},
+	{
+		.procname	= "bpf_spec_v4",
+		.data		= &bpf_spec_v4,
+		.maxlen		= sizeof(bpf_spec_v4),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec, /* TODO */
+		/* .extra1		= SYSCTL_ZERO, */
+		/* .extra2		= SYSCTL_ONE, */
+	},
+	{}
 };
 
 static int __init bpf_syscall_sysctl_init(void)
