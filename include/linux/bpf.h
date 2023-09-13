@@ -1409,9 +1409,9 @@ struct bpf_array {
 	u32 index_mask;
 	struct bpf_array_aux *aux;
 	union {
-		char value[0] __aligned(8);
-		void *ptrs[0] __aligned(8);
-		void __percpu *pptrs[0] __aligned(8);
+		char *valuep;
+		void **ptrsp;
+		void __percpu **pptrsp;
 	};
 };
 
@@ -1727,6 +1727,8 @@ struct bpf_map_value_off *bpf_map_copy_kptr_off_tab(const struct bpf_map *map);
 bool bpf_map_equal_kptr_off_tab(const struct bpf_map *map_a, const struct bpf_map *map_b);
 void bpf_map_free_kptrs(struct bpf_map *map, void *map_value);
 
+void *bpfbox_alloc(unsigned long size);
+void bpfbox_free(void *p);
 struct bpf_map *bpf_map_get(u32 ufd);
 struct bpf_map *bpf_map_get_with_uref(u32 ufd);
 struct bpf_map *__bpf_map_get(struct fd f);

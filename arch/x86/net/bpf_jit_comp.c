@@ -198,6 +198,17 @@ static u8 add_2mod(u8 byte, u32 r1, u32 r2)
 	return byte;
 }
 
+/* static u8 add_3mod(u8 byte, u32 r1, u32 r2, u32 r3) */
+/* { */
+/* 	if (is_ereg(r1)) */
+/* 		byte |= 1; */
+/* 	if (is_ereg(r3)) */
+/* 		byte |= 2; */
+/* 	if (is_ereg(r2)) */
+/* 		byte |= 4; */
+/* 	return byte; */
+/* } */
+
 /* Encode 'dst_reg' register into x86-64 opcode 'byte' */
 static u8 add_1reg(u8 byte, u32 dst_reg)
 {
@@ -208,6 +219,11 @@ static u8 add_1reg(u8 byte, u32 dst_reg)
 static u8 add_2reg(u8 byte, u32 dst_reg, u32 src_reg)
 {
 	return byte + reg2hex[dst_reg] + (reg2hex[src_reg] << 3);
+}
+
+static u8 add_1hreg(u8 byte, u32 dst_reg)
+{
+	return byte + (reg2hex[dst_reg] << 3);
 }
 
 /* Some 1-byte opcodes for binary ALU operations */
@@ -317,6 +333,14 @@ static void emit_prologue(u8 **pprog, u32 stack_depth, bool ebpf_from_cbpf,
 		EMIT3_off32(0x48, 0x81, 0xEC, round_up(stack_depth, 8));
 	if (tail_call_reachable)
 		EMIT1(0x50);         /* push rax */
+
+
+	EMIT2(0x41, 0x54);       /* push r12 */
+	/* mov r12, BPFBOX_START */
+	EMIT2(0x49, 0xBC);
+	EMIT((u32)BPFBOX_START, 4);
+	EMIT((u32)(BPFBOX_START >> 32), 4);
+
 	*pprog = prog;
 }
 
@@ -493,9 +517,11 @@ static void emit_bpf_tail_call_indirect(u8 **pprog, bool *callee_regs_used,
 	EMIT3(0x83, 0xC0, 0x01);                  /* add eax, 1 */
 	EMIT2_off32(0x89, 0x85, tcc_off);         /* mov dword ptr [rbp - tcc_off], eax */
 
+	/* DOTO: change the instruction */
 	/* prog = array->ptrs[index]; */
 	EMIT4_off32(0x48, 0x8B, 0x8C, 0xD6,       /* mov rcx, [rsi + rdx * 8 + offsetof(...)] */
-		    offsetof(struct bpf_array, ptrs));
+		    0);
+		    /* offsetof(struct bpf_array, ptrs)); */
 
 	/*
 	 * if (prog == NULL)
@@ -592,7 +618,7 @@ static void bpf_tail_call_direct_fixup(struct bpf_prog *prog)
 
 		array = container_of(poke->tail_call.map, struct bpf_array, map);
 		mutex_lock(&array->aux->poke_mutex);
-		target = array->ptrs[poke->tail_call.key];
+		target = array->ptrsp[poke->tail_call.key];
 		if (target) {
 			ret = __bpf_arch_text_poke(poke->tailcall_target,
 						   BPF_MOD_JUMP, NULL,
@@ -710,6 +736,34 @@ static void emit_insn_suffix(u8 **pprog, u32 ptr_reg, u32 val_reg, int off)
 	*pprog = prog;
 }
 
+static void emit_boxed_insn_suffix(u8 **pprog, u32 ptr_reg, u32 val_reg, int off)
+{
+	u8 *prog = *pprog;
+
+	if (is_imm8(off)) {
+		/* 1-byte signed displacement.
+		 *
+		 * If off == 0 we could skip this and save one extra byte, but
+		 * special case of x86 R13 which always needs an offset is not
+		 * worth the hassle
+		 */
+		/* encode the reg byte in memory addressing */
+		EMIT1(add_1hreg(0x44, val_reg));
+		/* encode the memory byte in memory addressing
+		 * r12 is embedded in 0x20
+		 */
+		EMIT2(add_1reg(0x20, ptr_reg), off);
+	} else {
+		/* encode the reg byte in memory addressing */
+		EMIT1(add_1hreg(0x84, val_reg));
+		/* encode the memory byte in memory addressing
+		 * r12 is embedded in 0x20
+		 */
+		EMIT1_off32(add_1reg(0x80, ptr_reg), off);
+	}
+	*pprog = prog;
+}
+
 /*
  * Emit a REX byte if it will be necessary to address these registers
  */
@@ -768,6 +822,34 @@ static void emit_ldx(u8 **pprog, u32 size, u32 dst_reg, u32 src_reg, int off)
 	*pprog = prog;
 }
 
+static void emit_boxed_ldx(u8 **pprog, u32 size, u32 dst_reg, u32 src_reg, int off)
+{
+	u8 *prog;
+	emit_mov_reg(pprog, false, src_reg, src_reg);
+	prog = *pprog;
+	switch (size) {
+	case BPF_B:
+		/* Emit 'movzx rax, byte ptr [rax + r12 + off]' */
+		EMIT3(add_2mod(0x4a, src_reg, dst_reg), 0x0F, 0xB6);
+		break;
+	case BPF_H:
+		/* Emit 'movzx rax, word ptr [rax + r12 + off]' */
+		EMIT3(add_2mod(0x4a, src_reg, dst_reg), 0x0F, 0xB7);
+		break;
+	case BPF_W:
+		/* Emit 'mov eax, dword ptr [rax + r12 + 0x14]' */
+		/* r12 in mem always requires a REX.X */
+		EMIT2(add_2mod(0x42, src_reg, dst_reg), 0x8B);
+		break;
+	case BPF_DW:
+		/* Emit 'mov rax, qword ptr [rax + r12 + 0x14]' */
+		EMIT2(add_2mod(0x4a, src_reg, dst_reg), 0x8B);
+		break;
+	}
+	emit_boxed_insn_suffix(&prog, src_reg, dst_reg, off);
+	*pprog = prog;
+}
+
 /* STX: *(u8*)(dst_reg + off) = src_reg */
 static void emit_stx(u8 **pprog, u32 size, u32 dst_reg, u32 src_reg, int off)
 {
@@ -796,6 +878,32 @@ static void emit_stx(u8 **pprog, u32 size, u32 dst_reg, u32 src_reg, int off)
 		break;
 	case BPF_DW:
 		EMIT2(add_2mod(0x48, dst_reg, src_reg), 0x89);
+		break;
+	}
+	emit_insn_suffix(&prog, dst_reg, src_reg, off);
+	*pprog = prog;
+}
+
+static noinline void emit_boxed_stx(u8 **pprog, u32 size, u32 dst_reg, u32 src_reg, int off)
+{
+	u8 *prog;
+	/* clear the upper 32 bit of the pointer */
+	emit_mov_reg(pprog, false, dst_reg, dst_reg);
+
+	prog = *pprog;
+	/* again r12 in mem always requires a REX.X */
+	switch (size) {
+	case BPF_B:
+		EMIT2(add_2mod(0x42, dst_reg, src_reg), 0x88);
+		break;
+	case BPF_H:
+		EMIT3(0x66, add_2mod(0x42, dst_reg, src_reg), 0x89);
+		break;
+	case BPF_W:
+		EMIT2(add_2mod(0x42, dst_reg, src_reg), 0x89);
+		break;
+	case BPF_DW:
+		EMIT2(add_2mod(0x4a, dst_reg, src_reg), 0x89);
 		break;
 	}
 	emit_insn_suffix(&prog, dst_reg, src_reg, off);
@@ -906,6 +1014,7 @@ static int do_jit(struct bpf_prog *bpf_prog, int *addrs, u8 *image, u8 *rw_image
 	int i, excnt = 0;
 	int ilen, proglen = 0;
 	u8 *prog = temp;
+	bool boxmem_next = false;
 	int err;
 
 	detect_reg_usage(insn, insn_cnt, callee_regs_used,
@@ -1230,6 +1339,10 @@ static int do_jit(struct bpf_prog *bpf_prog, int *addrs, u8 *image, u8 *rw_image
 				EMIT_LFENCE();
 			break;
 
+		case BPF_ST | BPF_BOXMEM:
+			boxmem_next = true;
+			break;
+
 			/* ST: *(u8*)(dst_reg + off) = imm */
 		case BPF_ST | BPF_MEM | BPF_B:
 			if (is_ereg(dst_reg))
@@ -1265,7 +1378,12 @@ st:			if (is_imm8(insn->off))
 		case BPF_STX | BPF_MEM | BPF_H:
 		case BPF_STX | BPF_MEM | BPF_W:
 		case BPF_STX | BPF_MEM | BPF_DW:
-			emit_stx(&prog, BPF_SIZE(insn->code), dst_reg, src_reg, insn->off);
+			if (!boxmem_next) {
+				emit_stx(&prog, BPF_SIZE(insn->code), dst_reg, src_reg, insn->off);
+			} else {
+				emit_boxed_stx(&prog, BPF_SIZE(insn->code), dst_reg, src_reg, insn->off);
+				boxmem_next = false;
+			}
 			break;
 
 			/* LDX: dst_reg = *(u8*)(src_reg + off) */
@@ -1327,7 +1445,12 @@ st:			if (is_imm8(insn->off))
 				start_of_ldx = prog;
 				end_of_jmp2[-1] = start_of_ldx - end_of_jmp2;
 			}
-			emit_ldx(&prog, BPF_SIZE(insn->code), dst_reg, src_reg, insn->off);
+			if (!boxmem_next) {
+				emit_ldx(&prog, BPF_SIZE(insn->code), dst_reg, src_reg, insn->off);
+			} else {
+				emit_boxed_ldx(&prog, BPF_SIZE(insn->code), dst_reg, src_reg, insn->off);
+				boxmem_next = false;
+			}
 			if (BPF_MODE(insn->code) == BPF_PROBE_MEM) {
 				struct exception_table_entry *ex;
 				u8 *_insn = image + proglen + (start_of_ldx - temp);
@@ -1701,6 +1824,7 @@ emit_jmp:
 			/* Update cleanup_addr */
 			ctx->cleanup_addr = proglen;
 			pop_callee_regs(&prog, callee_regs_used);
+			EMIT2(0x41, 0x5C);   /* pop r12 */
 			EMIT1(0xC9);         /* leave */
 			emit_return(&prog, image + addrs[i - 1] + (prog - temp));
 			break;

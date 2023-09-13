@@ -15045,8 +15045,8 @@ static void __init destroy_tail_call_tests(struct bpf_array *progs)
 	int i;
 
 	for (i = 0; i < ARRAY_SIZE(tail_call_tests); i++)
-		if (progs->ptrs[i])
-			bpf_prog_free(progs->ptrs[i]);
+		if (progs->ptrsp[i])
+			bpf_prog_free(progs->ptrsp[i]);
 	kfree(progs);
 }
 
@@ -15057,7 +15057,7 @@ static __init int prepare_tail_call_tests(struct bpf_array **pprogs)
 	int which, err;
 
 	/* Allocate the table of programs to be used for tall calls */
-	progs = kzalloc(sizeof(*progs) + (ntests + 1) * sizeof(progs->ptrs[0]),
+	progs = kzalloc(sizeof(*progs) + (ntests + 1) * sizeof(progs->ptrsp[0]),
 			GFP_KERNEL);
 	if (!progs)
 		goto out_nomem;
@@ -15151,7 +15151,7 @@ static __init int prepare_tail_call_tests(struct bpf_array **pprogs)
 		if (err)
 			goto out_err;
 
-		progs->ptrs[which] = fp;
+		progs->ptrsp[which] = fp;
 	}
 
 	/* The last entry contains a NULL program pointer */
@@ -15175,7 +15175,7 @@ static __init int test_tail_calls(struct bpf_array *progs)
 
 	for (i = 0; i < ARRAY_SIZE(tail_call_tests); i++) {
 		struct tail_call_test *test = &tail_call_tests[i];
-		struct bpf_prog *fp = progs->ptrs[i];
+		struct bpf_prog *fp = progs->ptrsp[i];
 		int *data = NULL;
 		int state = 0;
 		u64 duration;

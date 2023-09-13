@@ -75,6 +75,7 @@ struct ctl_table_header;
  * Speculative Store Bypass
  */
 #define BPF_NOSPEC	0xc0
+#define BPF_BOXMEM	0xe0
 
 /* As per nm, we expose JITed images as text (code) section for
  * kallsyms. That way, tools like perf can find it to match
@@ -397,6 +398,14 @@ static inline bool insn_is_zext(const struct bpf_insn *insn)
 #define BPF_ST_NOSPEC()						\
 	((struct bpf_insn) {					\
 		.code  = BPF_ST | BPF_NOSPEC,			\
+		.dst_reg = 0,					\
+		.src_reg = 0,					\
+		.off   = 0,					\
+		.imm   = 0 })
+
+#define BPF_ST_BOXMEM()						\
+	((struct bpf_insn) {					\
+		.code  = BPF_ST | BPF_BOXMEM,			\
 		.dst_reg = 0,					\
 		.src_reg = 0,					\
 		.off   = 0,					\

@@ -4751,7 +4751,7 @@ BPF_CALL_3(bpf_skb_under_cgroup, struct sk_buff *, skb, struct bpf_map *, map,
 	if (unlikely(idx >= array->map.max_entries))
 		return -E2BIG;
 
-	cgrp = READ_ONCE(array->ptrs[idx]);
+	cgrp = READ_ONCE(array->ptrsp[idx]);
 	if (unlikely(!cgrp))
 		return -EAGAIN;
 

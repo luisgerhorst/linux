@@ -186,6 +186,10 @@ extern unsigned int ptrs_per_p4d;
 #define KMSAN_MODULES_ORIGIN_START	(KMSAN_MODULES_SHADOW_START + MODULES_LEN)
 #endif /* CONFIG_KMSAN */
 
+#define BPFBOX_SIZE_GB		4UL
+#define BPFBOX_START		0xffffe90000000000UL
+#define BPFBOX_END		(BPFBOX_START + (BPFBOX_SIZE_GB << 30))
+
 #define MODULES_VADDR		(__START_KERNEL_map + KERNEL_IMAGE_SIZE)
 /* The module sections ends with the start of the fixmap */
 #ifndef CONFIG_DEBUG_KMAP_LOCAL_FORCE_MAP

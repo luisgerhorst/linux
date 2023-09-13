@@ -1652,6 +1652,7 @@ static u64 ___bpf_prog_run(u64 *regs, const struct bpf_insn *insn)
 		[BPF_JMP | BPF_CALL_ARGS] = &&JMP_CALL_ARGS,
 		[BPF_JMP | BPF_TAIL_CALL] = &&JMP_TAIL_CALL,
 		[BPF_ST  | BPF_NOSPEC] = &&ST_NOSPEC,
+		[BPF_ST  | BPF_BOXMEM] = &&ST_BOXMEM,
 		[BPF_LDX | BPF_PROBE_MEM | BPF_B] = &&LDX_PROBE_MEM_B,
 		[BPF_LDX | BPF_PROBE_MEM | BPF_H] = &&LDX_PROBE_MEM_H,
 		[BPF_LDX | BPF_PROBE_MEM | BPF_W] = &&LDX_PROBE_MEM_W,
@@ -1660,6 +1661,7 @@ static u64 ___bpf_prog_run(u64 *regs, const struct bpf_insn *insn)
 #undef BPF_INSN_3_LBL
 #undef BPF_INSN_2_LBL
 	u32 tail_call_cnt = 0;
+	unsigned long boxmem_next = 0;
 
 #define CONT	 ({ insn++; goto select_insn; })
 #define CONT_JMP ({ insn++; goto select_insn; })
@@ -1840,7 +1842,7 @@ select_insn:
 
 		tail_call_cnt++;
 
-		prog = READ_ONCE(array->ptrs[index]);
+		prog = READ_ONCE(array->ptrsp[index]);
 		if (!prog)
 			goto out;
 
@@ -1912,20 +1914,29 @@ out:
 		barrier_nospec();
 #endif
 		CONT;
+	ST_BOXMEM:
+		BUG_ON(!(BPF_CLASS(insn[1].code) == BPF_LDX ||
+			 BPF_CLASS(insn[1].code) == BPF_STX ||
+			 BPF_CLASS(insn[1].code) == BPF_ST));
+		boxmem_next = BPFBOX_START;
 #define LDST(SIZEOP, SIZE)						\
 	STX_MEM_##SIZEOP:						\
-		*(SIZE *)(unsigned long) (DST + insn->off) = SRC;	\
+		*(SIZE *)(unsigned long) (boxmem_next + DST + insn->off) = SRC; 	\
+		boxmem_next = 0;					\
 		CONT;							\
 	ST_MEM_##SIZEOP:						\
-		*(SIZE *)(unsigned long) (DST + insn->off) = IMM;	\
+		*(SIZE *)(unsigned long) (boxmem_next + DST + insn->off) = IMM;	\
+		boxmem_next = 0;					\
 		CONT;							\
 	LDX_MEM_##SIZEOP:						\
-		DST = *(SIZE *)(unsigned long) (SRC + insn->off);	\
+		DST = *(SIZE *)(unsigned long) (boxmem_next + SRC + insn->off);	\
+		boxmem_next = 0;					\
 		CONT;							\
 	LDX_PROBE_MEM_##SIZEOP:						\
 		bpf_probe_read_kernel(&DST, sizeof(SIZE),		\
-				      (const void *)(long) (SRC + insn->off));	\
+				      (const void *)(long) (boxmem_next + SRC + insn->off));	\
 		DST = *((SIZE *)&DST);					\
+		boxmem_next = 0;					\
 		CONT;
 
 	LDST(B,   u8)

@@ -1116,7 +1116,7 @@ static enum hrtimer_restart bpf_timer_cb(struct hrtimer *hrtimer)
 		struct bpf_array *array = container_of(map, struct bpf_array, map);
 
 		/* compute the key */
-		idx = ((char *)value - array->value) / array->elem_size;
+		idx = ((char *)value - array->valuep) / array->elem_size;
 		key = &idx;
 	} else { /* hash or lru */
 		key = value - round_up(map->key_size, 8);

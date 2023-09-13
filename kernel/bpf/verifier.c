@@ -12874,7 +12874,14 @@ static int resolve_pseudo_ldimm64(struct bpf_verifier_env *env)
 			aux = &env->insn_aux_data[i];
 			if (insn[0].src_reg == BPF_PSEUDO_MAP_FD ||
 			    insn[0].src_reg == BPF_PSEUDO_MAP_IDX) {
-				addr = (unsigned long)map;
+				if (map->map_type == BPF_MAP_TYPE_ARRAY) {
+					struct bpf_array *array = \
+						container_of(map, struct bpf_array, map);
+					addr = (unsigned long)(array->valuep) - BPFBOX_START;
+				} else {
+					addr = (unsigned long)map;
+				}
+
 			} else {
 				u32 off = insn[1].imm;
 
@@ -13581,13 +13588,27 @@ static int convert_ctx_accesses(struct bpf_verifier_env *env)
 		}
 
 		target_size = 0;
-		cnt = convert_ctx_access(type, insn, insn_buf, env->prog,
-					 &target_size);
-		if (cnt == 0 || cnt >= ARRAY_SIZE(insn_buf) ||
-		    (ctx_field_size && !target_size)) {
-			verbose(env, "bpf verifier is misconfigured\n");
-			return -EINVAL;
+		/* Add NOSPEC in the beginning */
+		if (!env->bypass_spec_v4) {
+			insn_buf[0] = BPF_ST_NOSPEC();
+			cnt = convert_ctx_access(type, insn, insn_buf + 1, env->prog,
+						 &target_size);
+			if (cnt == 0 || cnt + 1 >= ARRAY_SIZE(insn_buf) ||
+			    (ctx_field_size && !target_size)) {
+				verbose(env, "bpf verifier is misconfigured\n");
+				return -EINVAL;
+			}
+			cnt += 1;
+		} else {
+			cnt = convert_ctx_access(type, insn, insn_buf, env->prog,
+						 &target_size);
+			if (cnt == 0 || cnt >= ARRAY_SIZE(insn_buf) ||
+			    (ctx_field_size && !target_size)) {
+				verbose(env, "bpf verifier is misconfigured\n");
+				return -EINVAL;
+			}
 		}
+
 
 		if (is_narrower_load && size < target_size) {
 			u8 shift = bpf_ctx_narrow_access_offset(
@@ -14011,6 +14032,27 @@ static int do_misc_fixups(struct bpf_verifier_env *env)
 			continue;
 		}
 
+		/* Adding instrumentation before memory access to map value pointer */
+		if ((BPF_CLASS(insn->code) == BPF_LDX ||
+		     BPF_CLASS(insn->code) == BPF_STX ||
+		     BPF_CLASS(insn->code) == BPF_ST) &&
+		    env->insn_aux_data[i + delta].ptr_type == PTR_TO_MAP_VALUE) {
+			struct bpf_insn patch[] = {
+				BPF_ST_BOXMEM(),
+				*insn,
+			};
+
+			cnt = ARRAY_SIZE(patch);
+			new_prog = bpf_patch_insn_data(env, i + delta, patch, cnt);
+			if (!new_prog)
+				return -ENOMEM;
+
+			delta    += cnt - 1;
+			env->prog = new_prog;
+			insn      = new_prog->insnsi + i + delta;
+			continue;
+		}
+
 		/* Rewrite pointer arithmetic to mitigate speculation attacks. */
 		if (insn->code == (BPF_ALU64 | BPF_ADD | BPF_X) ||
 		    insn->code == (BPF_ALU64 | BPF_SUB | BPF_X)) {
@@ -14213,7 +14255,12 @@ static int do_misc_fixups(struct bpf_verifier_env *env)
 		 * and other inlining handlers are currently limited to 64 bit
 		 * only.
 		 */
-		if (prog->jit_requested && BITS_PER_LONG == 64 &&
+		/* if (prog->jit_requested && BITS_PER_LONG == 64 && */
+
+		/* TODO: roll back this and use a data structure for reverse look up,
+		 * this is a hack to get array map lookup working
+		 */
+		if (BITS_PER_LONG == 64 &&
 		    (insn->imm == BPF_FUNC_map_lookup_elem ||
 		     insn->imm == BPF_FUNC_map_update_elem ||
 		     insn->imm == BPF_FUNC_map_delete_elem ||
@@ -15359,6 +15406,9 @@ skip_full_check:
 
 	if (ret == 0)
 		ret = fixup_call_args(env);
+
+	if (ret == 0)
+		ret =
 
 	env->verification_time = ktime_get_ns() - start_time;
 	print_verification_stats(env);

@@ -234,7 +234,8 @@ static noinline int vmalloc_fault(unsigned long address)
 	pte_t *pte_k;
 
 	/* Make sure we are in vmalloc area: */
-	if (!(address >= VMALLOC_START && address < VMALLOC_END))
+	if (!(address >= VMALLOC_START && address < VMALLOC_END)
+	    && !(address >= BPFBOX_START && address < BPFBOX_END))
 		return -1;
 
 	/*
