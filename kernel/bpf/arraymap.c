@@ -264,7 +264,7 @@ static void *percpu_array_map_lookup_percpu_elem(struct bpf_map *map, void *key,
 	if (unlikely(index >= array->map.max_entries))
 		return NULL;
 
-	return per_cpu_ptr(array->pptrs[index & array->index_mask], cpu);
+	return per_cpu_ptr(array->pptrsp[index & array->index_mask], cpu);
 }
 
 int bpf_percpu_array_copy(struct bpf_map *map, void *key, void *value)
@@ -433,7 +433,7 @@ static void array_map_free(struct bpf_map *map)
 	if (map_value_has_kptrs(map)) {
 		if (array->map.map_type == BPF_MAP_TYPE_PERCPU_ARRAY) {
 			for (i = 0; i < array->map.max_entries; i++) {
-				void __percpu *pptr = array->pptrs[i & array->index_mask];
+				void __percpu *pptr = array->pptrsp[i & array->index_mask];
 				int cpu;
 
 				for_each_possible_cpu(cpu) {
