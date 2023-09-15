@@ -1403,16 +1403,21 @@ static inline void bpf_trampoline_unlink_cgroup_shim(struct bpf_prog *prog)
 }
 #endif
 
+struct bpf_array_inner {
+	u32 elem_size;
+	union {
+		char value[0] __aligned(8);
+		void *ptrs[0] __aligned(8);
+		void __percpu *pptrs[0] __aligned(8);
+	};
+};
+
 struct bpf_array {
 	struct bpf_map map;
 	u32 elem_size;
 	u32 index_mask;
 	struct bpf_array_aux *aux;
-	union {
-		char *valuep;
-		void **ptrsp;
-		void __percpu **pptrsp;
-	};
+	struct bpf_array_inner *inner;
 };
 
 #define BPF_COMPLEXITY_LIMIT_INSNS      1000000 /* yes. 1M insns */

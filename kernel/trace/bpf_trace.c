@@ -562,7 +562,7 @@ get_map_perf_counter(struct bpf_map *map, u64 flags,
 	if (unlikely(index >= array->map.max_entries))
 		return -E2BIG;
 
-	ee = READ_ONCE(array->ptrsp[index]);
+	ee = READ_ONCE(array->inner->ptrs[index]);
 	if (!ee)
 		return -ENOENT;
 
@@ -634,7 +634,7 @@ __bpf_perf_event_output(struct pt_regs *regs, struct bpf_map *map,
 	if (unlikely(index >= array->map.max_entries))
 		return -E2BIG;
 
-	ee = READ_ONCE(array->ptrsp[index]);
+	ee = READ_ONCE(array->inner->ptrs[index]);
 	if (!ee)
 		return -ENOENT;
 
@@ -802,7 +802,7 @@ BPF_CALL_2(bpf_current_task_under_cgroup, struct bpf_map *, map, u32, idx)
 	if (unlikely(idx >= array->map.max_entries))
 		return -E2BIG;
 
-	cgrp = READ_ONCE(array->ptrsp[idx]);
+	cgrp = READ_ONCE(array->inner->ptrs[idx]);
 	if (unlikely(!cgrp))
 		return -EAGAIN;
 
