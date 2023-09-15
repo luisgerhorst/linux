@@ -906,7 +906,7 @@ static noinline void emit_boxed_stx(u8 **pprog, u32 size, u32 dst_reg, u32 src_r
 		EMIT2(add_2mod(0x4a, dst_reg, src_reg), 0x89);
 		break;
 	}
-	emit_insn_suffix(&prog, dst_reg, src_reg, off);
+	emit_boxed_insn_suffix(&prog, dst_reg, src_reg, off);
 	*pprog = prog;
 }
 

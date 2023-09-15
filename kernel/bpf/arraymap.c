@@ -213,29 +213,23 @@ static int array_map_gen_lookup(struct bpf_map *map, struct bpf_insn *insn_buf)
 	struct bpf_insn *insn = insn_buf;
 	u32 elem_size = array->elem_size;
 	const int ret = BPF_REG_0;
-	const int map_ptr = BPF_REG_1;
+	const int map_inner_ptr = BPF_REG_1;
 	const int index = BPF_REG_2;
 
 	if (map->map_flags & BPF_F_INNER_MAP)
 		return -EOPNOTSUPP;
 
-	/* *insn++ = BPF_ALU64_IMM(BPF_ADD, map_ptr, offsetof(struct bpf_array, value)); */
+	*insn++ = BPF_ALU64_IMM(BPF_ADD, map_inner_ptr, offsetof(struct bpf_array_inner, value));
 
-	/* *insn++ = BPF_LDX_MEM(BPF_DW, map_ptr, map_ptr, offsetof(struct bpf_array, valuep)); */
 	*insn++ = BPF_LDX_MEM(BPF_W, ret, index, 0);
-	if (!map->bypass_spec_v1) {
-		*insn++ = BPF_JMP_IMM(BPF_JGE, ret, map->max_entries, 4);
-		*insn++ = BPF_ALU32_IMM(BPF_AND, ret, array->index_mask);
-	} else {
-		*insn++ = BPF_JMP_IMM(BPF_JGE, ret, map->max_entries, 3);
-	}
+	*insn++ = BPF_JMP_IMM(BPF_JGE, ret, map->max_entries, 3);
 
 	if (is_power_of_2(elem_size)) {
 		*insn++ = BPF_ALU64_IMM(BPF_LSH, ret, ilog2(elem_size));
 	} else {
 		*insn++ = BPF_ALU64_IMM(BPF_MUL, ret, elem_size);
 	}
-	*insn++ = BPF_ALU64_REG(BPF_ADD, ret, map_ptr);
+	*insn++ = BPF_ALU64_REG(BPF_ADD, ret, map_inner_ptr);
 	*insn++ = BPF_JMP_IMM(BPF_JA, 0, 0, 1);
 	*insn++ = BPF_MOV64_IMM(ret, 0);
 	return insn - insn_buf;
