@@ -383,14 +383,14 @@ void __init kasan_init(void)
 	if (IS_ENABLED(CONFIG_KASAN_VMALLOC))
 		kasan_shallow_populate_pgds(
 			kasan_mem_to_shadow((void *)VMALLOC_START),
-			kasan_mem_to_shadow((void *)VMALLOC_END));
+			kasan_mem_to_shadow((void *)BPFBOX_END));
 	else
 		kasan_populate_early_shadow(
 			kasan_mem_to_shadow((void *)VMALLOC_START),
-			kasan_mem_to_shadow((void *)VMALLOC_END));
+			kasan_mem_to_shadow((void *)BPFBOX_END));
 
 	kasan_populate_early_shadow(
-		kasan_mem_to_shadow((void *)VMALLOC_END + 1),
+		kasan_mem_to_shadow((void *)BPFBOX_END + 1),
 		shadow_cpu_entry_begin);
 
 	kasan_populate_shadow((unsigned long)shadow_cpu_entry_begin,

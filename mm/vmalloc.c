@@ -8,6 +8,7 @@
  *  Improving global KVA allocator, Uladzislau Rezki, Sony, May 2019
  */
 
+#include "asm/pgtable_64_types.h"
 #include <linux/vmalloc.h>
 #include <linux/mm.h>
 #include <linux/module.h>
@@ -639,6 +640,13 @@ static int vmap_pages_range(unsigned long addr, unsigned long end,
 	return err;
 }
 
+static bool is_vmalloc_or_bpfbox_addr(const void *x)
+{
+	unsigned long addr = (unsigned long) x;
+	if (is_vmalloc_addr(x)) return 1;
+	return (addr >= BPFBOX_START && addr < BPFBOX_END);
+}
+
 int is_vmalloc_or_module_addr(const void *x)
 {
 	/*
@@ -651,7 +659,7 @@ int is_vmalloc_or_module_addr(const void *x)
 	if (addr >= MODULES_VADDR && addr < MODULES_END)
 		return 1;
 #endif
-	return is_vmalloc_addr(x);
+	return is_vmalloc_or_bpfbox_addr(x);
 }
 
 /*
