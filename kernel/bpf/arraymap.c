@@ -3,6 +3,7 @@
  * Copyright (c) 2016,2017 Facebook
  */
 #include <linux/bpf.h>
+#include <linux/bpfbox.h>
 #include <linux/btf.h>
 #include <linux/err.h>
 #include <linux/slab.h>
@@ -125,19 +126,7 @@ static struct bpf_map *array_map_alloc(union bpf_attr *attr)
 
 	if (!array->inner)
 		goto free_array;
-	/* allocate all map elements and zero-initialize them */
-	/* if (attr->map_flags & BPF_F_MMAPABLE) { */
-	/* 	void *data; */
 
-	/* 	/\* kmalloc'ed memory can't be mmap'ed, use explicit vmalloc *\/ */
-	/* 	data = bpf_map_area_mmapable_alloc(array_size, numa_node); */
-	/* 	if (!data) */
-	/* 		return ERR_PTR(-ENOMEM); */
-	/* 	array = data + PAGE_ALIGN(sizeof(struct bpf_array)) */
-	/* 		- offsetof(struct bpf_array, value); */
-	/* } else { */
-	/* 	array = bpf_map_area_alloc(array_size, numa_node); */
-	/* } */
 	array->index_mask = index_mask;
 	array->map.bypass_spec_v1 = bypass_spec_v1;
 
@@ -222,6 +211,7 @@ static int array_map_gen_lookup(struct bpf_map *map, struct bpf_insn *insn_buf)
 
 	*insn++ = BPF_ALU64_IMM(BPF_ADD, map_inner_ptr, offsetof(struct bpf_array_inner, value));
 
+	*insn++ = BPF_ST_BOXMEM();
 	*insn++ = BPF_LDX_MEM(BPF_W, ret, index, 0);
 	*insn++ = BPF_JMP_IMM(BPF_JGE, ret, map->max_entries, 3);
 

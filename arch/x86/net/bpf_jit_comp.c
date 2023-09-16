@@ -9,6 +9,7 @@
 #include <linux/filter.h>
 #include <linux/if_vlan.h>
 #include <linux/bpf.h>
+#include <linux/bpfbox.h>
 #include <linux/memory.h>
 #include <linux/sort.h>
 #include <asm/extable.h>
@@ -329,8 +330,12 @@ static void emit_prologue(u8 **pprog, u32 stack_depth, bool ebpf_from_cbpf,
 	EMIT_ENDBR();
 
 	/* sub rsp, rounded_stack_depth */
-	if (stack_depth)
-		EMIT3_off32(0x48, 0x81, 0xEC, round_up(stack_depth, 8));
+	/* if (stack_depth) */
+	/* 	EMIT3_off32(0x48, 0x81, 0xEC, round_up(stack_depth, 8)); */
+
+	/* mov edi, $stack_depth */
+	/* call open_bpf_scratch */
+
 	if (tail_call_reachable)
 		EMIT1(0x50);         /* push rax */
 
@@ -367,6 +372,51 @@ static int emit_call(u8 **pprog, void *func, void *ip)
 static int emit_jump(u8 **pprog, void *func, void *ip)
 {
 	return emit_patch(pprog, func, ip, 0xE9);
+}
+
+static int emit_open_scratch(u8 **pprog, u32 stack_depth, void *ip, bool tail_call_reachable)
+{
+	u8 *prog = *pprog;
+	if (stack_depth) {
+		if (!tail_call_reachable) {
+			EMIT1(0x57);	/* push rdi */
+		} else {
+			EMIT1(0x57);	/* push rdi */
+			/* TODO: FIXME */
+		}
+		EMIT1(0xBF);
+		EMIT(round_up(stack_depth, 8), 4);
+		emit_call(&prog, open_bpf_scratch, ip+6);
+		if (!tail_call_reachable) {
+			EMIT1(0x5F);	/* pop rdi */
+		} else {
+			EMIT1(0x5F);	/* pop rdi */
+			/* TODO: FIXME */
+		}
+		EMIT1(0x55);		/* push rbp */
+		EMIT2(0x89, 0xC5);	/* mov    ebp,eax */
+	}
+	*pprog = prog;
+	return 0;
+}
+
+static void emit_close_scratch(u8 **pprog, u32 stack_depth, void *ip, bool doing_tail_call)
+{
+	u8 *prog = *pprog;
+	if (stack_depth) {
+		EMIT1(0x5D);	/* pop rbp  */
+		EMIT1(0x50);	/* push rax */
+		/* TODO Fix doing_tail_call */
+
+		/* mov rdi, $stack_depth */
+		EMIT1(0xBF);
+		EMIT(round_up(stack_depth, 8), 4);
+		emit_call(&prog, close_bpf_scratch, ip+7);
+
+		EMIT1(0x58);	/* pop rax */
+
+	}
+	*pprog = prog;
 }
 
 static int __bpf_arch_text_poke(void *ip, enum bpf_text_poke_type t,
@@ -759,7 +809,7 @@ static void emit_boxed_insn_suffix(u8 **pprog, u32 ptr_reg, u32 val_reg, int off
 		/* encode the memory byte in memory addressing
 		 * r12 is embedded in 0x20
 		 */
-		EMIT1_off32(add_1reg(0x80, ptr_reg), off);
+		EMIT1_off32(add_1reg(0x20, ptr_reg), off);
 	}
 	*pprog = prog;
 }
@@ -1028,7 +1078,10 @@ static int do_jit(struct bpf_prog *bpf_prog, int *addrs, u8 *image, u8 *rw_image
 		      bpf_prog->aux->func_idx != 0);
 	push_callee_regs(&prog, callee_regs_used);
 
+	emit_open_scratch(&prog, bpf_prog->aux->stack_depth, image + (prog - temp),
+			tail_call_reachable);
 	ilen = prog - temp;
+
 	if (rw_image)
 		memcpy(rw_image + proglen, temp, ilen);
 	proglen += ilen;
@@ -1823,6 +1876,8 @@ emit_jmp:
 			seen_exit = true;
 			/* Update cleanup_addr */
 			ctx->cleanup_addr = proglen;
+			emit_close_scratch(&prog, bpf_prog->aux->stack_depth,
+					image + addrs[i - 1] + (prog - temp), false);
 			pop_callee_regs(&prog, callee_regs_used);
 			EMIT2(0x41, 0x5C);   /* pop r12 */
 			EMIT1(0xC9);         /* leave */
