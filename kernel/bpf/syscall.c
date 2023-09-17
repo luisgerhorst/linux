@@ -349,20 +349,6 @@ void bpf_map_area_free(void *area)
 	kvfree(area);
 }
 
-void *bpfbox_alloc(unsigned long size)
-{
-	const gfp_t gfp = (__GFP_NOWARN | __GFP_ZERO | __GFP_ACCOUNT
-			   | GFP_KERNEL | __GFP_RETRY_MAYFAIL);
-	return __vmalloc_node_range(size, PAGE_SIZE, BPFBOX_START, BPFBOX_END,
-				    gfp, PAGE_KERNEL, 0, NUMA_NO_NODE,
-				    __builtin_return_address(0));
-}
-
-void bpfbox_free(void *p)
-{
-	vfree(p);
-}
-
 static u32 bpf_map_flags_retain_permanent(u32 flags)
 {
 	/* Some map creation flags are not tied to the map object but
