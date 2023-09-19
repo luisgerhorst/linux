@@ -20,32 +20,56 @@
 	(BPF_F_NUMA_NODE | BPF_F_MMAPABLE | BPF_F_ACCESS_MASK | \
 	 BPF_F_PRESERVE_ELEMS | BPF_F_INNER_MAP)
 
+/* static void bpf_array_free_percpu(struct bpf_array *array) */
+/* { */
+/* 	int i; */
+
+/* 	for (i = 0; i < array->map.max_entries; i++) { */
+/* 		free_percpu(array->inner->pptrs[i]); */
+/* 		cond_resched(); */
+/* 	} */
+/* } */
+
+/* static int bpf_array_alloc_percpu(struct bpf_array *array) */
+/* { */
+/* 	void __percpu *ptr; */
+/* 	int i; */
+
+/* 	for (i = 0; i < array->map.max_entries; i++) { */
+/* 		ptr = bpf_map_alloc_percpu(&array->map, array->elem_size, 8, */
+/* 					   GFP_USER | __GFP_NOWARN); */
+/* 		if (!ptr) { */
+/* 			bpf_array_free_percpu(array); */
+/* 			return -ENOMEM; */
+/* 		} */
+/* 		array->inner->pptrs[i] = ptr; */
+/* 		cond_resched(); */
+/* 	} */
+
+/* 	return 0; */
+/* } */
+
 static void bpf_array_free_percpu(struct bpf_array *array)
 {
 	int i;
-
-	for (i = 0; i < array->map.max_entries; i++) {
-		free_percpu(array->inner->pptrs[i]);
-		cond_resched();
+	void *ptr;
+	for (i = 0; i< nr_cpu_ids; i++) {
+		ptr = bpf_unbox_ptr(array->inner->pptrs[i]);
+		if (ptr) bpfbox_free(ptr);
 	}
 }
 
 static int bpf_array_alloc_percpu(struct bpf_array *array)
 {
-	void __percpu *ptr;
 	int i;
-
-	for (i = 0; i < array->map.max_entries; i++) {
-		ptr = bpf_map_alloc_percpu(&array->map, array->elem_size, 8,
-					   GFP_USER | __GFP_NOWARN);
+	void *ptr;
+	for (i = 0; i < nr_cpu_ids; i++) {
+		ptr = bpfbox_alloc(array->inner->total_size);
 		if (!ptr) {
 			bpf_array_free_percpu(array);
-			return -ENOMEM;
 		}
-		array->inner->pptrs[i] = ptr;
-		cond_resched();
+		array->inner->pptrs[i] = bpf_box_ptr(ptr);
 	}
-
 	return 0;
 }
 
@@ -113,7 +137,7 @@ static struct bpf_map *array_map_alloc(union bpf_attr *attr)
 	array_size = sizeof(struct bpf_array_inner);
 	/* we are always going to map the buffer page aligned */
 	if (percpu) {
-		array_size += (u64) max_entries * sizeof(void *);
+		array_size += nr_cpu_ids * sizeof(void __bpfbox*);
 	} else {
 		array_size += (u64) max_entries * elem_size;
 	}
@@ -134,6 +158,8 @@ static struct bpf_map *array_map_alloc(union bpf_attr *attr)
 	bpf_map_init_from_attr(&array->map, attr);
 	array->elem_size = elem_size;
 	array->inner->elem_size = elem_size;
+	array->inner->max_entries = max_entries;
+	array->inner->total_size = (u32) (elem_size * max_entries);
 
 	if (percpu && bpf_array_alloc_percpu(array)) {
 		goto free_value;
@@ -226,37 +252,40 @@ static int array_map_gen_lookup(struct bpf_map *map, struct bpf_insn *insn_buf)
 	return insn - insn_buf;
 }
 
-/* Called from eBPF program */
+/* Exclusively called from eBPF program
+ * The function assumes that r12 is BPFBOX_START
+ * The actual implementation is in boxed_helpers.c
+ */
+void __bpfbox *__percpu_array_map_lookup_elem(struct bpf_array_inner __bpfbox *inner,
+					void __bpfbox *key);
+
 static void *percpu_array_map_lookup_elem(struct bpf_map *map, void *key)
 {
 	struct bpf_array *array = container_of(map, struct bpf_array, map);
-	u32 index = *(u32 *)key;
 
-	if (unlikely(index >= array->map.max_entries))
-		return NULL;
-
-	return this_cpu_ptr(array->inner->pptrs[index & array->index_mask]);
+	return (void *)bpf_unbox_ptr(__percpu_array_map_lookup_elem(
+					bpf_box_ptr(array->inner),bpf_box_ptr(key)));
 }
 
 static void *percpu_array_map_lookup_percpu_elem(struct bpf_map *map, void *key, u32 cpu)
 {
 	struct bpf_array *array = container_of(map, struct bpf_array, map);
 	u32 index = *(u32 *)key;
-
+	void __bpfbox *pptr = array->inner->pptrs[cpu];
 	if (cpu >= nr_cpu_ids)
 		return NULL;
 
-	if (unlikely(index >= array->map.max_entries))
+	if (unlikely(index >= map->max_entries))
 		return NULL;
 
-	return per_cpu_ptr(array->inner->pptrs[index & array->index_mask], cpu);
+	return (void *)(bpf_unbox_ptr(pptr) + index*array->elem_size);
 }
 
 int bpf_percpu_array_copy(struct bpf_map *map, void *key, void *value)
 {
 	struct bpf_array *array = container_of(map, struct bpf_array, map);
 	u32 index = *(u32 *)key;
-	void __percpu *pptr;
+	void __bpfbox *pptr;
 	int cpu, off = 0;
 	u32 size;
 
@@ -269,14 +298,15 @@ int bpf_percpu_array_copy(struct bpf_map *map, void *key, void *value)
 	 */
 	size = array->elem_size;
 	rcu_read_lock();
-	pptr = array->inner->pptrs[index & array->index_mask];
 	for_each_possible_cpu(cpu) {
-		copy_map_value_long(map, value + off, per_cpu_ptr(pptr, cpu));
+		pptr = array->inner->pptrs[cpu];
+		copy_map_value_long(map, value + off, bpf_unbox_ptr(pptr + size*index));
 		check_and_init_map_value(map, value + off);
 		off += size;
 	}
 	rcu_read_unlock();
 	return 0;
+	BUG();
 }
 
 /* Called from syscall */
@@ -331,7 +361,8 @@ static int array_map_update_elem(struct bpf_map *map, void *key, void *value,
 		return -EINVAL;
 
 	if (array->map.map_type == BPF_MAP_TYPE_PERCPU_ARRAY) {
-		val = this_cpu_ptr(array->inner->pptrs[index & array->index_mask]);
+		void __bpfbox *pptr = array->inner->pptrs[raw_smp_processor_id()];
+		val = bpf_unbox_ptr(pptr + index*array->elem_size);
 		copy_map_value(map, val, value);
 		check_and_free_fields(array, val);
 	} else {
@@ -351,7 +382,7 @@ int bpf_percpu_array_update(struct bpf_map *map, void *key, void *value,
 {
 	struct bpf_array *array = container_of(map, struct bpf_array, map);
 	u32 index = *(u32 *)key;
-	void __percpu *pptr;
+	void __bpfbox *pptr;
 	int cpu, off = 0;
 	u32 size;
 
@@ -375,14 +406,15 @@ int bpf_percpu_array_update(struct bpf_map *map, void *key, void *value,
 	 */
 	size = array->elem_size;
 	rcu_read_lock();
-	pptr = array->inner->pptrs[index & array->index_mask];
 	for_each_possible_cpu(cpu) {
-		copy_map_value_long(map, per_cpu_ptr(pptr, cpu), value + off);
-		check_and_free_fields(array, per_cpu_ptr(pptr, cpu));
+		pptr = array->inner->pptrs[cpu];
+		copy_map_value_long(map, bpf_unbox_ptr(pptr + size*index), value + off);
+		check_and_free_fields(array, bpf_unbox_ptr(pptr + size*index));
 		off += size;
 	}
 	rcu_read_unlock();
 	return 0;
+	BUG();
 }
 
 /* Called from syscall or from eBPF program */
@@ -413,29 +445,30 @@ static void array_map_free_timers(struct bpf_map *map)
 static void array_map_free(struct bpf_map *map)
 {
 	struct bpf_array *array = container_of(map, struct bpf_array, map);
-	int i;
+	/* int i; */
 
 	if (map_value_has_kptrs(map)) {
-		if (array->map.map_type == BPF_MAP_TYPE_PERCPU_ARRAY) {
-			for (i = 0; i < array->map.max_entries; i++) {
-				void __percpu *pptr = array->inner->pptrs[i & array->index_mask];
-				int cpu;
+		/* if (array->map.map_type == BPF_MAP_TYPE_PERCPU_ARRAY) { */
+		/* 	for (i = 0; i < array->map.max_entries; i++) { */
+		/* 		void __percpu *pptr = array->inner->pptrs[i & array->index_mask]; */
+		/* 		int cpu; */
 
-				for_each_possible_cpu(cpu) {
-					bpf_map_free_kptrs(map, per_cpu_ptr(pptr, cpu));
-					cond_resched();
-				}
-			}
-		} else {
-			for (i = 0; i < array->map.max_entries; i++)
-				bpf_map_free_kptrs(map, array_map_elem_ptr(array, i));
-		}
-		bpf_map_free_kptr_off_tab(map);
+		/* 		for_each_possible_cpu(cpu) { */
+		/* 			bpf_map_free_kptrs(map, per_cpu_ptr(pptr, cpu)); */
+		/* 			cond_resched(); */
+		/* 		} */
+		/* 	} */
+		/* } else { */
+		/* 	for (i = 0; i < array->map.max_entries; i++) */
+		/* 		bpf_map_free_kptrs(map, array_map_elem_ptr(array, i)); */
+		/* } */
+		/* bpf_map_free_kptr_off_tab(map); */
+		BUG();
 	}
 
-	bpfbox_free(array->inner);
 	if (array->map.map_type == BPF_MAP_TYPE_PERCPU_ARRAY)
 		bpf_array_free_percpu(array);
+	bpfbox_free(array->inner);
 
 	if (array->map.map_flags & BPF_F_MMAPABLE)
 		bpf_map_area_free(array_map_vmalloc_addr(array));
@@ -469,17 +502,17 @@ static void percpu_array_map_seq_show_elem(struct bpf_map *map, void *key,
 {
 	struct bpf_array *array = container_of(map, struct bpf_array, map);
 	u32 index = *(u32 *)key;
-	void __percpu *pptr;
+	void __bpfbox *pptr;
 	int cpu;
 
 	rcu_read_lock();
 
 	seq_printf(m, "%u: {\n", *(u32 *)key);
-	pptr = array->inner->pptrs[index & array->index_mask];
 	for_each_possible_cpu(cpu) {
+		pptr = array->inner->pptrs[cpu];
 		seq_printf(m, "\tcpu%d: ", cpu);
 		btf_type_seq_show(map->btf, map->btf_value_type_id,
-				  per_cpu_ptr(pptr, cpu), m);
+				  bpf_unbox_ptr(pptr + index*array->elem_size), m);
 		seq_puts(m, "\n");
 	}
 	seq_puts(m, "}\n");
@@ -563,9 +596,11 @@ static void *bpf_array_map_seq_start(struct seq_file *seq, loff_t *pos)
 	if (*pos == 0)
 		++*pos;
 	array = container_of(map, struct bpf_array, map);
-	index = info->index & array->index_mask;
-	if (info->percpu_value_buf)
-	       return array->inner->pptrs[index];
+	index = info->index;
+	if (info->percpu_value_buf) {
+		void __bpfbox *pptr = array->inner->pptrs[0];
+		return bpf_unbox_ptr(pptr + index * array->elem_size);
+	}
 	return array_map_elem_ptr(array, index);
 }
 
@@ -583,49 +618,52 @@ static void *bpf_array_map_seq_next(struct seq_file *seq, void *v, loff_t *pos)
 
 	array = container_of(map, struct bpf_array, map);
 	index = info->index & array->index_mask;
-	if (info->percpu_value_buf)
-	       return array->inner->pptrs[index];
+	if (info->percpu_value_buf) {
+		void __bpfbox *pptr = array->inner->pptrs[0];
+		return bpf_unbox_ptr(pptr + index * array->elem_size);
+	}
 	return array_map_elem_ptr(array, index);
 }
 
 static int __bpf_array_map_seq_show(struct seq_file *seq, void *v)
 {
-	struct bpf_iter_seq_array_map_info *info = seq->private;
-	struct bpf_iter__bpf_map_elem ctx = {};
-	struct bpf_map *map = info->map;
-	struct bpf_array *array = container_of(map, struct bpf_array, map);
-	struct bpf_iter_meta meta;
-	struct bpf_prog *prog;
-	int off = 0, cpu = 0;
-	void __percpu **pptr;
-	u32 size;
+	/* struct bpf_iter_seq_array_map_info *info = seq->private; */
+	/* struct bpf_iter__bpf_map_elem ctx = {}; */
+	/* struct bpf_map *map = info->map; */
+	/* struct bpf_array *array = container_of(map, struct bpf_array, map); */
+	/* struct bpf_iter_meta meta; */
+	/* struct bpf_prog *prog; */
+	/* int off = 0, cpu = 0; */
+	/* void __percpu **pptr; */
+	/* u32 size; */
 
-	meta.seq = seq;
-	prog = bpf_iter_get_info(&meta, v == NULL);
-	if (!prog)
-		return 0;
+	/* meta.seq = seq; */
+	/* prog = bpf_iter_get_info(&meta, v == NULL); */
+	/* if (!prog) */
+	/* 	return 0; */
 
-	ctx.meta = &meta;
-	ctx.map = info->map;
-	if (v) {
-		ctx.key = &info->index;
+	/* ctx.meta = &meta; */
+	/* ctx.map = info->map; */
+	/* if (v) { */
+	/* 	ctx.key = &info->index; */
 
-		if (!info->percpu_value_buf) {
-			ctx.value = v;
-		} else {
-			pptr = v;
-			size = array->elem_size;
-			for_each_possible_cpu(cpu) {
-				copy_map_value_long(map, info->percpu_value_buf + off,
-						    per_cpu_ptr(pptr, cpu));
-				check_and_init_map_value(map, info->percpu_value_buf + off);
-				off += size;
-			}
-			ctx.value = info->percpu_value_buf;
-		}
-	}
+	/* 	if (!info->percpu_value_buf) { */
+	/* 		ctx.value = v; */
+	/* 	} else { */
+	/* 		pptr = v; */
+	/* 		size = array->elem_size; */
+	/* 		for_each_possible_cpu(cpu) { */
+	/* 			copy_map_value_long(map, info->percpu_value_buf + off, */
+	/* 					    per_cpu_ptr(pptr, cpu)); */
+	/* 			check_and_init_map_value(map, info->percpu_value_buf + off); */
+	/* 			off += size; */
+	/* 		} */
+	/* 		ctx.value = info->percpu_value_buf; */
+	/* 	} */
+	/* } */
 
-	return bpf_iter_run_prog(prog, &ctx);
+	/* return bpf_iter_run_prog(prog, &ctx); */
+	BUG();
 }
 
 static int bpf_array_map_seq_show(struct seq_file *seq, void *v)
@@ -706,7 +744,7 @@ static int bpf_for_each_array_elem(struct bpf_map *map, bpf_callback_t callback_
 		migrate_disable();
 	for (i = 0; i < map->max_entries; i++) {
 		if (is_percpu)
-			val = this_cpu_ptr(array->inner->pptrs[i]);
+			val = bpf_unbox_ptr(array->inner->pptrs[raw_smp_processor_id()] + i*array->elem_size);
 		else
 			val = array_map_elem_ptr(array, i);
 		num_elems++;
@@ -755,6 +793,7 @@ const struct bpf_map_ops percpu_array_map_ops = {
 	.map_free = array_map_free,
 	.map_get_next_key = array_map_get_next_key,
 	.map_lookup_elem = percpu_array_map_lookup_elem,
+	.bpfbox_map_lookup_elem = __percpu_array_map_lookup_elem,
 	.map_update_elem = array_map_update_elem,
 	.map_delete_elem = array_map_delete_elem,
 	.map_lookup_percpu_elem = percpu_array_map_lookup_percpu_elem,

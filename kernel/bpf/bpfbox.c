@@ -1,5 +1,3 @@
-#include "asm/pgtable_64_types.h"
-#include "linux/kernel.h"
 #include <linux/bpf.h>
 #include <linux/bpfbox.h>
 #include <linux/vmalloc.h>
@@ -41,15 +39,8 @@ unsigned int open_bpf_scratch(int size)
 {
 	struct bpfbox_scratch_region *region;
 	int cur;
-retry:
 	region = get_cpu_ptr(&bpfbox_scratch_region);
 	cur = atomic_fetch_add(size, &region->sp) + size;
-	if (cur > region->size) {
-		atomic_sub(size, &region->sp);
-		put_cpu_ptr(&bpfbox_scratch_region);
-		cond_resched();
-		goto retry;
-	}
 	return (unsigned int)((unsigned long)region->start - (unsigned long)BPFBOX_START + cur);
 }
 

@@ -12875,7 +12875,8 @@ static int resolve_pseudo_ldimm64(struct bpf_verifier_env *env)
 			aux = &env->insn_aux_data[i];
 			if (insn[0].src_reg == BPF_PSEUDO_MAP_FD ||
 			    insn[0].src_reg == BPF_PSEUDO_MAP_IDX) {
-				if (map->map_type == BPF_MAP_TYPE_ARRAY) {
+				if (map->map_type == BPF_MAP_TYPE_ARRAY ||
+				    map->map_type == BPF_MAP_TYPE_PERCPU_ARRAY) {
 					struct bpf_array *array = \
 						container_of(map, struct bpf_array, map);
 					addr = (unsigned long)(array->inner) - BPFBOX_START;
@@ -14308,7 +14309,11 @@ static int do_misc_fixups(struct bpf_verifier_env *env)
 patch_map_ops_generic:
 			switch (insn->imm) {
 			case BPF_FUNC_map_lookup_elem:
-				insn->imm = BPF_CALL_IMM(ops->map_lookup_elem);
+				if (ops->bpfbox_map_lookup_elem) {
+					insn->imm = BPF_CALL_IMM(ops->bpfbox_map_lookup_elem);
+				} else {
+					insn->imm = BPF_CALL_IMM(ops->map_lookup_elem);
+				}
 				continue;
 			case BPF_FUNC_map_update_elem:
 				insn->imm = BPF_CALL_IMM(ops->map_update_elem);

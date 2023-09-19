@@ -68,6 +68,8 @@ struct bpf_iter_seq_info {
 	u32 seq_priv_size;
 };
 
+struct bpf_array_inner;
+
 /* map is generic key/value storage optionally accessible by eBPF programs */
 struct bpf_map_ops {
 	/* funcs callable from userspace (via syscall) */
@@ -92,6 +94,7 @@ struct bpf_map_ops {
 
 	/* funcs callable from userspace and from eBPF programs */
 	void *(*map_lookup_elem)(struct bpf_map *map, void *key);
+	void __bpfbox *(*bpfbox_map_lookup_elem)(struct bpf_array_inner __bpfbox *map, void __bpfbox *key);
 	int (*map_update_elem)(struct bpf_map *map, void *key, void *value, u64 flags);
 	int (*map_delete_elem)(struct bpf_map *map, void *key);
 	int (*map_push_elem)(struct bpf_map *map, void *value, u64 flags);
@@ -1405,10 +1408,12 @@ static inline void bpf_trampoline_unlink_cgroup_shim(struct bpf_prog *prog)
 
 struct bpf_array_inner {
 	u32 elem_size;
+	u32 max_entries;
+	u32 total_size;
 	union {
 		char value[0] __aligned(8);
 		void *ptrs[0] __aligned(8);
-		void __percpu *pptrs[0] __aligned(8);
+		void __bpfbox *pptrs[0] __aligned(8);
 	};
 };
 
