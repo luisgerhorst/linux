@@ -39,7 +39,11 @@ static void bpf_test_timer_enter(struct bpf_test_timer *t)
 	else
 		migrate_disable();
 
+#ifdef CONFIG_X86_64
+	t->time_start = rdtsc_ordered();
+#else
 	t->time_start = ktime_get_ns();
+#endif
 }
 
 static void bpf_test_timer_leave(struct bpf_test_timer *t)
@@ -61,8 +65,13 @@ static bool bpf_test_timer_continue(struct bpf_test_timer *t, int iterations,
 	t->i += iterations;
 	if (t->i >= repeat) {
 		/* We're done. */
+#ifdef CONFIG_X86_64
+		t->time_spent += rdtsc_ordered() - t->time_start;
+#else
 		t->time_spent += ktime_get_ns() - t->time_start;
-		do_div(t->time_spent, t->i);
+#endif
+		/* do_div(t->time_spent, t->i); */
+		t->time_spent = t->time_spent / t->i;
 		*duration = t->time_spent > U32_MAX ? U32_MAX : (u32)t->time_spent;
 		*err = 0;
 		goto reset;
@@ -76,7 +85,11 @@ static bool bpf_test_timer_continue(struct bpf_test_timer *t, int iterations,
 
 	if (need_resched()) {
 		/* During iteration: we need to reschedule between runs. */
+#ifdef CONFIG_X86_64
+		t->time_spent += rdtsc_ordered() - t->time_start;
+#else
 		t->time_spent += ktime_get_ns() - t->time_start;
+#endif
 		bpf_test_timer_leave(t);
 		cond_resched();
 		bpf_test_timer_enter(t);
