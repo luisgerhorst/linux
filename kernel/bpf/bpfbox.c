@@ -39,14 +39,13 @@ unsigned int open_bpf_scratch(int size)
 {
 	struct bpfbox_scratch_region *region;
 	int cur;
-	region = get_cpu_ptr(&bpfbox_scratch_region);
-	cur = atomic_fetch_add(size, &region->sp) + size;
+	region = raw_cpu_ptr(&bpfbox_scratch_region);
+	cur = local_add_return(size, &region->sp);
 	return (unsigned int)((unsigned long)region->start - (unsigned long)BPFBOX_START + cur);
 }
 
 void close_bpf_scratch(int size)
 {
 	struct bpfbox_scratch_region *region = this_cpu_ptr(&bpfbox_scratch_region);
-	atomic_sub(size, &region->sp);
-	put_cpu_ptr(&bpfbox_scratch_region);
+	local_sub(size, &region->sp);
 }
