@@ -214,6 +214,7 @@ struct bpf_map {
 	void *security;
 #endif
 	enum bpf_map_type map_type;
+	struct bpf_map_inner *map_inner;
 	u32 key_size;
 	u32 value_size;
 	u32 max_entries;
@@ -241,7 +242,6 @@ struct bpf_map {
 	struct work_struct work;
 	struct mutex freeze_mutex;
 	atomic64_t writecnt;
-	struct bpf_map_inner *inner;
 	/* 'Ownership' of program-containing map is claimed by the first program
 	 * that is going to use this map or by the first program which FD is
 	 * stored in the map to make sure that all callers and callees have the
@@ -1411,13 +1411,13 @@ static inline void bpf_trampoline_unlink_cgroup_shim(struct bpf_prog *prog)
 
 struct bpf_map_inner {
 	u32 key_size;
-	u32 elem_size;
 	u32 max_entries;
 };
 
 struct bpf_array_inner {
 	struct bpf_map_inner map_inner;
-	u32 total_size;
+	u32 elem_size;
+	u32 total_size; /* useless kind of, to be removed */
 	union {
 		char value[0] __aligned(8);
 		void *ptrs[0] __aligned(8);
@@ -1430,8 +1430,9 @@ struct bpf_array {
 	u32 elem_size;
 	u32 index_mask;
 	struct bpf_array_aux *aux;
-	struct bpf_array_inner *inner;
 };
+
+#define array_inner(array) container_of((array)->map.map_inner, struct bpf_array_inner, map_inner)
 
 #define BPF_COMPLEXITY_LIMIT_INSNS      1000000 /* yes. 1M insns */
 #define MAX_TAIL_CALL_CNT 33

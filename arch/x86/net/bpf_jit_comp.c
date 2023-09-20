@@ -657,6 +657,8 @@ static void bpf_tail_call_direct_fixup(struct bpf_prog *prog)
 	int i, ret;
 
 	for (i = 0; i < prog->aux->size_poke_tab; i++) {
+		BUG();
+		/* wrong pcpu stuff */
 		poke = &prog->aux->poke_tab[i];
 		if (poke->aux && poke->aux != prog->aux)
 			continue;
@@ -668,7 +670,7 @@ static void bpf_tail_call_direct_fixup(struct bpf_prog *prog)
 
 		array = container_of(poke->tail_call.map, struct bpf_array, map);
 		mutex_lock(&array->aux->poke_mutex);
-		target = array->inner->ptrs[poke->tail_call.key];
+		target = array_inner(array)->ptrs[poke->tail_call.key];
 		if (target) {
 			ret = __bpf_arch_text_poke(poke->tailcall_target,
 						   BPF_MOD_JUMP, NULL,

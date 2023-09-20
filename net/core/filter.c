@@ -4745,13 +4745,15 @@ BPF_CALL_3(bpf_skb_under_cgroup, struct sk_buff *, skb, struct bpf_map *, map,
 	struct cgroup *cgrp;
 	struct sock *sk;
 
+	BUG();
+	/* wrong pcpu thing */
 	sk = skb_to_full_sk(skb);
 	if (!sk || !sk_fullsock(sk))
 		return -ENOENT;
 	if (unlikely(idx >= array->map.max_entries))
 		return -E2BIG;
 
-	cgrp = READ_ONCE(array->inner->ptrs[idx]);
+	cgrp = READ_ONCE(array_inner(array)->ptrs[idx]);
 	if (unlikely(!cgrp))
 		return -EAGAIN;
 

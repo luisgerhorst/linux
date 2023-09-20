@@ -10335,7 +10335,7 @@ static int check_cond_jmp_op(struct bpf_verifier_env *env,
 				      opcode == BPF_JEQ);
 	} else if (BPF_SRC(insn->code) == BPF_K &&
 		insn->imm == 0 && (opcode == BPF_JEQ || opcode == BPF_JNE)) {
-		
+		/* get around katran rejection */
 	} else if (!try_match_pkt_pointers(insn, dst_reg, &regs[insn->src_reg],
 					   this_branch, other_branch) &&
 		   is_pointer_value(env, insn->dst_reg)) {
@@ -12881,14 +12881,16 @@ static int resolve_pseudo_ldimm64(struct bpf_verifier_env *env)
 			aux = &env->insn_aux_data[i];
 			if (insn[0].src_reg == BPF_PSEUDO_MAP_FD ||
 			    insn[0].src_reg == BPF_PSEUDO_MAP_IDX) {
-				if (map->map_type == BPF_MAP_TYPE_ARRAY ||
-				    map->map_type == BPF_MAP_TYPE_PERCPU_ARRAY ||
-				    map->map_type == BPF_MAP_TYPE_HASH) {
-					addr = (unsigned long)(map->inner) - BPFBOX_START;
-				} else {
+				switch (map->map_type) {
+				case BPF_MAP_TYPE_ARRAY:
+				case BPF_MAP_TYPE_PERCPU_ARRAY:
+				case BPF_MAP_TYPE_HASH:
+				case BPF_MAP_TYPE_LRU_HASH:
+					addr = (unsigned long)(map->map_inner) - BPFBOX_START;
+					break;
+				default:
 					addr = (unsigned long)map;
 				}
-
 			} else {
 				u32 off = insn[1].imm;
 
@@ -14314,7 +14316,9 @@ static int do_misc_fixups(struct bpf_verifier_env *env)
 patch_map_ops_generic:
 			switch (insn->imm) {
 			case BPF_FUNC_map_lookup_elem:
-				if (ops->bpfbox_map_lookup_elem) {
+				if (ops->tmp_bpfbox_map_lookup_elem) {
+					insn->imm = BPF_CALL_IMM(ops->tmp_bpfbox_map_lookup_elem);
+				} else if (ops->bpfbox_map_lookup_elem) {
 					insn->imm = BPF_CALL_IMM(ops->bpfbox_map_lookup_elem);
 				} else {
 					insn->imm = BPF_CALL_IMM(ops->map_lookup_elem);

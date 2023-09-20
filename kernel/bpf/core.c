@@ -1842,7 +1842,7 @@ select_insn:
 
 		tail_call_cnt++;
 
-		prog = READ_ONCE(array->inner->ptrs[index]);
+		prog = READ_ONCE(array_inner(array)->ptrs[index]);
 		if (!prog)
 			goto out;
 
