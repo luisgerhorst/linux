@@ -8,7 +8,7 @@ void *bpfbox_alloc(unsigned long size)
 {
 	const gfp_t gfp = (__GFP_NOWARN | __GFP_ZERO | __GFP_ACCOUNT
 			   | GFP_KERNEL | __GFP_RETRY_MAYFAIL);
-	return __vmalloc_node_range(size, PAGE_SIZE, BPFBOX_START, BPFBOX_END,
+	return __vmalloc_node_range(size, PAGE_SIZE, BPFBOX_START + PAGE_SIZE, BPFBOX_END,
 				    gfp, PAGE_KERNEL, 0, NUMA_NO_NODE,
 				    __builtin_return_address(0));
 }
@@ -16,6 +16,40 @@ void *bpfbox_alloc(unsigned long size)
 void bpfbox_free(void *p)
 {
 	vfree(p);
+}
+
+void __bpfbox **bpfbox_alloc_pcpu(unsigned long size)
+{
+	int nrcpu = raw_smp_processor_id(), i;
+	void __bpfbox **base;
+	void *stuff;
+	size = roundup(size, 64);
+	base = bpfbox_alloc(nrcpu * sizeof(void __bpfbox *));
+	if (!base) {
+		goto err;
+	}
+	stuff = bpfbox_alloc(nrcpu * roundup(size, 64));
+	if (!stuff) {
+		goto err;
+	}
+	for (i = 0; i < nrcpu; i++) {
+		base[i] = bpf_box_ptr(stuff + i*size);
+	}
+	return base;
+err:
+	if (base && stuff)
+		bpfbox_free(stuff);
+	if (base)
+		bpfbox_free(base);
+	return NULL;
+}
+
+void bpfbox_free_pcpu(void __bpfbox **p)
+{
+	void __bpfbox **actual_p = (void __bpfbox **) p;
+	if (actual_p[0])
+		bpfbox_free(bpf_unbox_ptr(actual_p[0]));
+	bpfbox_free(p);
 }
 
 DEFINE_PER_CPU(struct bpfbox_scratch_region, bpfbox_scratch_region);

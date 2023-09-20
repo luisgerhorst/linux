@@ -50,6 +50,7 @@ struct module;
 struct bpf_func_state;
 struct ftrace_ops;
 struct cgroup;
+struct bpf_map_inner;
 
 extern struct idr btf_idr;
 extern spinlock_t btf_idr_lock;
@@ -68,7 +69,6 @@ struct bpf_iter_seq_info {
 	u32 seq_priv_size;
 };
 
-struct bpf_array_inner;
 
 /* map is generic key/value storage optionally accessible by eBPF programs */
 struct bpf_map_ops {
@@ -94,8 +94,10 @@ struct bpf_map_ops {
 
 	/* funcs callable from userspace and from eBPF programs */
 	void *(*map_lookup_elem)(struct bpf_map *map, void *key);
-	void __bpfbox *(*bpfbox_map_lookup_elem)(struct bpf_array_inner __bpfbox *map, void __bpfbox *key);
+	void __bpfbox *(*bpfbox_map_lookup_elem)(struct bpf_map_inner __bpfbox *map, void __bpfbox *key);
+	void *(*tmp_bpfbox_map_lookup_elem)(struct bpf_map_inner __bpfbox *map, void __bpfbox *key);
 	int (*map_update_elem)(struct bpf_map *map, void *key, void *value, u64 flags);
+	int (*bpfbox_map_update_elem)(struct bpf_map *map, void __bpfbox *key, void *value, u64 flags);
 	int (*map_delete_elem)(struct bpf_map *map, void *key);
 	int (*map_push_elem)(struct bpf_map *map, void *value, u64 flags);
 	int (*map_pop_elem)(struct bpf_map *map, void *value);
@@ -239,6 +241,7 @@ struct bpf_map {
 	struct work_struct work;
 	struct mutex freeze_mutex;
 	atomic64_t writecnt;
+	struct bpf_map_inner *inner;
 	/* 'Ownership' of program-containing map is claimed by the first program
 	 * that is going to use this map or by the first program which FD is
 	 * stored in the map to make sure that all callers and callees have the
@@ -1406,9 +1409,14 @@ static inline void bpf_trampoline_unlink_cgroup_shim(struct bpf_prog *prog)
 }
 #endif
 
-struct bpf_array_inner {
+struct bpf_map_inner {
+	u32 key_size;
 	u32 elem_size;
 	u32 max_entries;
+};
+
+struct bpf_array_inner {
+	struct bpf_map_inner map_inner;
 	u32 total_size;
 	union {
 		char value[0] __aligned(8);

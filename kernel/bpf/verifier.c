@@ -12882,10 +12882,9 @@ static int resolve_pseudo_ldimm64(struct bpf_verifier_env *env)
 			if (insn[0].src_reg == BPF_PSEUDO_MAP_FD ||
 			    insn[0].src_reg == BPF_PSEUDO_MAP_IDX) {
 				if (map->map_type == BPF_MAP_TYPE_ARRAY ||
-				    map->map_type == BPF_MAP_TYPE_PERCPU_ARRAY) {
-					struct bpf_array *array = \
-						container_of(map, struct bpf_array, map);
-					addr = (unsigned long)(array->inner) - BPFBOX_START;
+				    map->map_type == BPF_MAP_TYPE_PERCPU_ARRAY ||
+				    map->map_type == BPF_MAP_TYPE_HASH) {
+					addr = (unsigned long)(map->inner) - BPFBOX_START;
 				} else {
 					addr = (unsigned long)map;
 				}

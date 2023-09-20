@@ -8,6 +8,8 @@
 
 void *bpfbox_alloc(unsigned long size);
 void bpfbox_free(void *p);
+void __bpfbox **bpfbox_alloc_pcpu(unsigned long size);
+void bpfbox_free_pcpu(void __bpfbox **p);
 
 #define bpf_unbox_ptr(p) \
 ({									\

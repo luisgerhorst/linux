@@ -156,9 +156,10 @@ static struct bpf_map *array_map_alloc(union bpf_attr *attr)
 
 	/* copy mandatory map attributes */
 	bpf_map_init_from_attr(&array->map, attr);
+	array->map.inner = &array->inner->map_inner;
 	array->elem_size = elem_size;
-	array->inner->elem_size = elem_size;
-	array->inner->max_entries = max_entries;
+	array->inner->map_inner.elem_size = elem_size;
+	array->inner->map_inner.max_entries = max_entries;
 	array->inner->total_size = (u32) (elem_size * max_entries);
 
 	if (percpu && bpf_array_alloc_percpu(array)) {
@@ -256,7 +257,7 @@ static int array_map_gen_lookup(struct bpf_map *map, struct bpf_insn *insn_buf)
  * The function assumes that r12 is BPFBOX_START
  * The actual implementation is in boxed_helpers.c
  */
-void __bpfbox *__percpu_array_map_lookup_elem(struct bpf_array_inner __bpfbox *inner,
+void __bpfbox *__percpu_array_map_lookup_elem(struct bpf_map_inner __bpfbox *inner,
 					void __bpfbox *key);
 
 static void *percpu_array_map_lookup_elem(struct bpf_map *map, void *key)
@@ -264,7 +265,7 @@ static void *percpu_array_map_lookup_elem(struct bpf_map *map, void *key)
 	struct bpf_array *array = container_of(map, struct bpf_array, map);
 
 	return (void *)bpf_unbox_ptr(__percpu_array_map_lookup_elem(
-					bpf_box_ptr(array->inner),bpf_box_ptr(key)));
+					bpf_box_ptr(&array->inner->map_inner),bpf_box_ptr(key)));
 }
 
 static void *percpu_array_map_lookup_percpu_elem(struct bpf_map *map, void *key, u32 cpu)
