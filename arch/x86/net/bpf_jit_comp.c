@@ -1400,27 +1400,47 @@ static int do_jit(struct bpf_prog *bpf_prog, int *addrs, u8 *image, u8 *rw_image
 
 			/* ST: *(u8*)(dst_reg + off) = imm */
 		case BPF_ST | BPF_MEM | BPF_B:
-			if (is_ereg(dst_reg))
+			if (boxmem_next) {
+				EMIT2(add_1mod(0x42, dst_reg), 0xC6);
+				goto box_st;
+			} else if (is_ereg(dst_reg))
 				EMIT2(0x41, 0xC6);
 			else
 				EMIT1(0xC6);
 			goto st;
 		case BPF_ST | BPF_MEM | BPF_H:
-			if (is_ereg(dst_reg))
+			if (boxmem_next) {
+				EMIT3(0x66, add_1mod(0x42, dst_reg), 0xC7);
+				goto box_st;
+			} else if (is_ereg(dst_reg))
 				EMIT3(0x66, 0x41, 0xC7);
 			else
 				EMIT2(0x66, 0xC7);
 			goto st;
 		case BPF_ST | BPF_MEM | BPF_W:
-			if (is_ereg(dst_reg))
+			if (boxmem_next) {
+				EMIT2(add_1mod(0x42, dst_reg), 0xC7);
+				goto box_st;
+			} else if (is_ereg(dst_reg))
 				EMIT2(0x41, 0xC7);
 			else
 				EMIT1(0xC7);
 			goto st;
 		case BPF_ST | BPF_MEM | BPF_DW:
-			EMIT2(add_1mod(0x48, dst_reg), 0xC7);
-
-st:			if (is_imm8(insn->off))
+			if (boxmem_next) {
+				EMIT2(add_1mod(0x4a, dst_reg), 0xC7);
+				goto box_st;
+			} else {
+				EMIT2(add_1mod(0x48, dst_reg), 0xC7);
+			}
+			goto st;
+box_st:
+			emit_boxed_insn_suffix(&prog, dst_reg, 0, insn->off);
+			EMIT(imm32, bpf_size_to_x86_bytes(BPF_SIZE(insn->code)));
+			boxmem_next = false;
+			break;
+st:
+			if (is_imm8(insn->off))
 				EMIT2(add_1reg(0x40, dst_reg), insn->off);
 			else
 				EMIT1_off32(add_1reg(0x80, dst_reg), insn->off);
