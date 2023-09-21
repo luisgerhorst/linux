@@ -14325,7 +14325,11 @@ patch_map_ops_generic:
 				}
 				continue;
 			case BPF_FUNC_map_update_elem:
-				insn->imm = BPF_CALL_IMM(ops->map_update_elem);
+				if (ops->bpfbox_map_update_elem) {
+					insn->imm = BPF_CALL_IMM(ops->bpfbox_map_update_elem);
+				} else {
+					insn->imm = BPF_CALL_IMM(ops->map_update_elem);
+				}
 				continue;
 			case BPF_FUNC_map_delete_elem:
 				insn->imm = BPF_CALL_IMM(ops->map_delete_elem);

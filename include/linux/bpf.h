@@ -97,7 +97,7 @@ struct bpf_map_ops {
 	void __bpfbox *(*bpfbox_map_lookup_elem)(struct bpf_map_inner __bpfbox *map, void __bpfbox *key);
 	void *(*tmp_bpfbox_map_lookup_elem)(struct bpf_map_inner __bpfbox *map, void __bpfbox *key);
 	int (*map_update_elem)(struct bpf_map *map, void *key, void *value, u64 flags);
-	int (*bpfbox_map_update_elem)(struct bpf_map *map, void __bpfbox *key, void *value, u64 flags);
+	int (*bpfbox_map_update_elem)(struct bpf_map_inner __bpfbox *map, void __bpfbox *key, void __bpfbox *value, u64 flags);
 	int (*map_delete_elem)(struct bpf_map *map, void *key);
 	int (*map_push_elem)(struct bpf_map *map, void *value, u64 flags);
 	int (*map_pop_elem)(struct bpf_map *map, void *value);

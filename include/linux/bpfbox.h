@@ -26,9 +26,26 @@ static inline void *fast_bpf_unbox_ptr(void __bpfbox *p)
 	return ret;
 }
 
+#define bpf_unbox_or_null_ptr(p) \
+({ \
+	(p == NULL) ? NULL : bpf_unbox_ptr(p); \
+})
+
 static inline void __bpfbox *bpf_box_ptr(void *ptr)
 {
-	return (__bpfbox void*) (ptr - BPFBOX_START);
+	void __bpfbox *p = (ptr - BPFBOX_START);
+#ifdef CONFIG_DEBUG_KERNEL
+	BUG_ON((unsigned long) p >> 32);
+#endif
+	return p;
+}
+
+static inline void __bpfbox *bpf_box_or_null_ptr(void *ptr)
+{
+	if (ptr == NULL)
+		return NULL;
+	else
+		return bpf_box_ptr(ptr);
 }
 
 struct bpfbox_scratch_region {
