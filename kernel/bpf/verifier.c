@@ -12886,6 +12886,7 @@ static int resolve_pseudo_ldimm64(struct bpf_verifier_env *env)
 				case BPF_MAP_TYPE_PERCPU_ARRAY:
 				case BPF_MAP_TYPE_HASH:
 				case BPF_MAP_TYPE_LRU_HASH:
+				case BPF_MAP_TYPE_ARRAY_OF_MAPS:
 					addr = (unsigned long)(map->map_inner) - BPFBOX_START;
 					break;
 				default:
@@ -14045,6 +14046,26 @@ static int do_misc_fixups(struct bpf_verifier_env *env)
 			continue;
 		}
 
+		if ((BPF_CLASS(insn->code) == BPF_LDX ||
+		     BPF_CLASS(insn->code) == BPF_STX ||
+		     BPF_CLASS(insn->code) == BPF_ST) &&
+		    (env->insn_aux_data[i + delta].ptr_type == PTR_TO_PACKET)) {
+			struct bpf_insn patch[] = {
+				BPF_ST_NOSPEC(),
+				*insn,
+			};
+
+			cnt = ARRAY_SIZE(patch);
+			new_prog = bpf_patch_insn_data(env, i + delta, patch, cnt);
+			if (!new_prog)
+				return -ENOMEM;
+
+			delta    += cnt - 1;
+			env->prog = new_prog;
+			insn      = new_prog->insnsi + i + delta;
+			continue;
+		}
+
 		/* Rewrite pointer arithmetic to mitigate speculation attacks. */
 		if (insn->code == (BPF_ALU64 | BPF_ADD | BPF_X) ||
 		    insn->code == (BPF_ALU64 | BPF_SUB | BPF_X)) {
@@ -14332,6 +14353,7 @@ patch_map_ops_generic:
 				}
 				continue;
 			case BPF_FUNC_map_delete_elem:
+				BUG();
 				insn->imm = BPF_CALL_IMM(ops->map_delete_elem);
 				continue;
 			case BPF_FUNC_map_push_elem:

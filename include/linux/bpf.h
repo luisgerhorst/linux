@@ -1410,6 +1410,7 @@ static inline void bpf_trampoline_unlink_cgroup_shim(struct bpf_prog *prog)
 #endif
 
 struct bpf_map_inner {
+	enum bpf_map_type map_type;
 	u32 key_size;
 	u32 max_entries;
 };
@@ -1430,6 +1431,8 @@ struct bpf_array {
 	u32 elem_size;
 	u32 index_mask;
 	struct bpf_array_aux *aux;
+	struct mutex update_mutex;
+	void *real_ptrs[0]; /* for map_in_map information */
 };
 
 #define array_inner(array) container_of((array)->map.map_inner, struct bpf_array_inner, map_inner)

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright (c) 2011-2014 PLUMgrid, http://plumgrid.com
  */
+#include "linux/bpf.h"
 #include <linux/bpf.h>
+#include <linux/bpfbox.h>
 #include <linux/btf.h>
 #include <linux/bpf-cgroup.h>
 #include <linux/rcupdate.h>
@@ -31,10 +33,12 @@
  * if program is allowed to access maps, so check rcu_read_lock_held in
  * all three functions.
  */
-BPF_CALL_2(bpf_map_lookup_elem, struct bpf_map *, map, void *, key)
+BPF_CALL_2(bpf_map_lookup_elem, struct bpf_map_inner *, map_inner, void *, key)
 {
 	WARN_ON_ONCE(!rcu_read_lock_held() && !rcu_read_lock_bh_held());
-	return (unsigned long) map->ops->map_lookup_elem(map, key);
+	if (bpf_unbox_ptr(map_inner)->map_type != BPF_MAP_TYPE_LRU_HASH)
+		BUG();
+	return (unsigned long) htab_lru_map_ops.bpfbox_map_lookup_elem(map_inner, key);
 }
 
 const struct bpf_func_proto bpf_map_lookup_elem_proto = {
@@ -46,11 +50,13 @@ const struct bpf_func_proto bpf_map_lookup_elem_proto = {
 	.arg2_type	= ARG_PTR_TO_MAP_KEY,
 };
 
-BPF_CALL_4(bpf_map_update_elem, struct bpf_map *, map, void *, key,
+BPF_CALL_4(bpf_map_update_elem, struct bpf_map_inner *, map_inner, void *, key,
 	   void *, value, u64, flags)
 {
 	WARN_ON_ONCE(!rcu_read_lock_held() && !rcu_read_lock_bh_held());
-	return map->ops->map_update_elem(map, key, value, flags);
+	if (bpf_unbox_ptr(map_inner)->map_type != BPF_MAP_TYPE_LRU_HASH)
+		BUG();
+	return htab_lru_map_ops.bpfbox_map_update_elem(map_inner, key, value, flags);
 }
 
 const struct bpf_func_proto bpf_map_update_elem_proto = {

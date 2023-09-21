@@ -8,46 +8,19 @@
 #include <linux/err.h>
 #include <linux/slab.h>
 #include <linux/mm.h>
+#include <linux/mutex.h>
 #include <linux/filter.h>
 #include <linux/perf_event.h>
 #include <uapi/linux/btf.h>
 #include <linux/rcupdate_trace.h>
 #include <linux/btf_ids.h>
+#include <linux/sched.h>
 
 #include "map_in_map.h"
 
 #define ARRAY_CREATE_FLAG_MASK \
 	(BPF_F_NUMA_NODE | BPF_F_MMAPABLE | BPF_F_ACCESS_MASK | \
 	 BPF_F_PRESERVE_ELEMS | BPF_F_INNER_MAP)
-
-/* static void bpf_array_free_percpu(struct bpf_array *array) */
-/* { */
-/* 	int i; */
-
-/* 	for (i = 0; i < array->map.max_entries; i++) { */
-/* 		free_percpu(array->inner->pptrs[i]); */
-/* 		cond_resched(); */
-/* 	} */
-/* } */
-
-/* static int bpf_array_alloc_percpu(struct bpf_array *array) */
-/* { */
-/* 	void __percpu *ptr; */
-/* 	int i; */
-
-/* 	for (i = 0; i < array->map.max_entries; i++) { */
-/* 		ptr = bpf_map_alloc_percpu(&array->map, array->elem_size, 8, */
-/* 					   GFP_USER | __GFP_NOWARN); */
-/* 		if (!ptr) { */
-/* 			bpf_array_free_percpu(array); */
-/* 			return -ENOMEM; */
-/* 		} */
-/* 		array->inner->pptrs[i] = ptr; */
-/* 		cond_resched(); */
-/* 	} */
-
-/* 	return 0; */
-/* } */
 
 static void bpf_array_free_percpu(struct bpf_array *array)
 {
@@ -105,6 +78,7 @@ int array_map_alloc_check(union bpf_attr *attr)
 static struct bpf_map *array_map_alloc(union bpf_attr *attr)
 {
 	bool percpu = attr->map_type == BPF_MAP_TYPE_PERCPU_ARRAY;
+	bool is_map_map = attr->map_type == BPF_MAP_TYPE_ARRAY_OF_MAPS;
 	int numa_node = bpf_map_attr_numa_node(attr);
 	u32 elem_size, index_mask, max_entries;
 	bool bypass_spec_v1 = bpf_bypass_spec_v1();
@@ -143,7 +117,13 @@ static struct bpf_map *array_map_alloc(union bpf_attr *attr)
 		array_size += (u64) max_entries * elem_size;
 	}
 
-	array = bpf_map_area_alloc(sizeof(struct bpf_array), numa_node);
+	if (!is_map_map)
+		array = bpf_map_area_alloc(sizeof(struct bpf_array), numa_node);
+	else
+		array = bpf_map_area_alloc(sizeof(struct bpf_array) + max_entries * sizeof(void *),
+					   numa_node);
+
+	mutex_init(&array->update_mutex);
 	if (!array)
 		goto nomem;
 
@@ -160,6 +140,7 @@ static struct bpf_map *array_map_alloc(union bpf_attr *attr)
 	bpf_map_init_from_attr(&array->map, attr);
 	array->elem_size = elem_size;
 	array->map.map_inner->max_entries = max_entries;
+	array->map.map_inner->map_type = array->map.map_type;
 	array_inner(array)->elem_size = elem_size;
 	array_inner(array)->total_size = (u32) (elem_size * max_entries);
 
@@ -865,8 +846,6 @@ int bpf_fd_array_map_update_elem(struct bpf_map *map, struct file *map_file,
 	void *new_ptr, *old_ptr;
 	u32 index = *(u32 *)key, ufd;
 
-	/* pcpu stuff is obviously wrong */
-	BUG();
 	if (map_flags != BPF_ANY)
 		return -EINVAL;
 
@@ -879,12 +858,19 @@ int bpf_fd_array_map_update_elem(struct bpf_map *map, struct file *map_file,
 		return PTR_ERR(new_ptr);
 
 	if (map->ops->map_poke_run) {
+		BUG();
 		mutex_lock(&array->aux->poke_mutex);
 		old_ptr = xchg(array_inner(array)->ptrs + index, new_ptr);
 		map->ops->map_poke_run(map, index, old_ptr, new_ptr);
 		mutex_unlock(&array->aux->poke_mutex);
 	} else {
-		old_ptr = xchg(array_inner(array)->ptrs + index, new_ptr);
+		struct bpf_map *inner_map = new_ptr;
+		if (map->map_type != BPF_MAP_TYPE_ARRAY_OF_MAPS)
+			BUG();
+		mutex_lock(&array->update_mutex);
+		old_ptr = xchg(array->real_ptrs + index, new_ptr);
+		array_inner(array)->ptrs[index] = bpf_box_ptr(inner_map->map_inner);
+		mutex_unlock(&array->update_mutex);
 	}
 
 	if (old_ptr)
@@ -898,8 +884,6 @@ static int fd_array_map_delete_elem(struct bpf_map *map, void *key)
 	void *old_ptr;
 	u32 index = *(u32 *)key;
 
-	BUG();
-	/* pcpu stuff is obviously wrong */
 	if (index >= array->map.max_entries)
 		return -E2BIG;
 
@@ -909,7 +893,12 @@ static int fd_array_map_delete_elem(struct bpf_map *map, void *key)
 		map->ops->map_poke_run(map, index, old_ptr, NULL);
 		mutex_unlock(&array->aux->poke_mutex);
 	} else {
-		old_ptr = xchg(array_inner(array)->ptrs + index, NULL);
+		if (map->map_type != BPF_MAP_TYPE_ARRAY_OF_MAPS)
+			BUG();
+		mutex_lock(&array->update_mutex);
+		old_ptr = xchg(array->real_ptrs + index, NULL);
+		array_inner(array)->ptrs[index] = NULL;
+		mutex_unlock(&array->update_mutex);
 	}
 
 	if (old_ptr) {
@@ -1393,23 +1382,17 @@ static int array_of_map_gen_lookup(struct bpf_map *map,
 	const int map_ptr = BPF_REG_1;
 	const int index = BPF_REG_2;
 
-	BUG();
-	/* fix this */
-	/* *insn++ = BPF_ALU64_IMM(BPF_ADD, map_ptr, offsetof(struct bpf_array, value)); */
-	*insn++ = BPF_LDX_MEM(BPF_DW, map_ptr, map_ptr, offsetof(struct bpf_map, map_inner));
+	*insn++ = BPF_ALU64_IMM(BPF_ADD, map_ptr, offsetof(struct bpf_array_inner, ptrs));
 
+	*insn++ = BPF_ST_BOXMEM();
 	*insn++ = BPF_LDX_MEM(BPF_W, ret, index, 0);
-	if (!map->bypass_spec_v1) {
-		*insn++ = BPF_JMP_IMM(BPF_JGE, ret, map->max_entries, 6);
-		*insn++ = BPF_ALU32_IMM(BPF_AND, ret, array->index_mask);
-	} else {
-		*insn++ = BPF_JMP_IMM(BPF_JGE, ret, map->max_entries, 5);
-	}
+	*insn++ = BPF_JMP_IMM(BPF_JGE, ret, map->max_entries, 6);
 	if (is_power_of_2(elem_size))
 		*insn++ = BPF_ALU64_IMM(BPF_LSH, ret, ilog2(elem_size));
 	else
 		*insn++ = BPF_ALU64_IMM(BPF_MUL, ret, elem_size);
 	*insn++ = BPF_ALU64_REG(BPF_ADD, ret, map_ptr);
+	*insn++ = BPF_ST_BOXMEM();
 	*insn++ = BPF_LDX_MEM(BPF_DW, ret, ret, 0);
 	*insn++ = BPF_JMP_IMM(BPF_JEQ, ret, 0, 1);
 	*insn++ = BPF_JMP_IMM(BPF_JA, 0, 0, 1);
