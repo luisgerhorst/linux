@@ -14051,7 +14051,7 @@ static int do_misc_fixups(struct bpf_verifier_env *env)
 		     BPF_CLASS(insn->code) == BPF_ST) &&
 		    (env->insn_aux_data[i + delta].ptr_type == PTR_TO_PACKET)) {
 			struct bpf_insn patch[] = {
-				BPF_ST_NOSPEC(),
+				BPF_ST_BOXMEM(),
 				*insn,
 			};
 

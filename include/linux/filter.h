@@ -787,12 +787,11 @@ static __always_inline u32 bpf_prog_run_xdp(const struct bpf_prog *prog,
 	u32 act, loc, size;
 	void *new_data;
 
-	size = xdp->data_end - xdp->data;
+	size = xdp->data_end - xdp->data_hard_start + 1;
 	memcpy(&new_xdp, xdp, sizeof(struct xdp_buff));
-	size = min(prog->aux->max_pkt_offset, size);
-	size = round_up(size, 8);
+	/* size = min(prog->aux->max_pkt_offset + (u32)(xdp->data - xdp->data_hard_start), size); */
 
-	loc = open_bpf_scratch(size) - size;
+	loc = open_bpf_scratch(PAGE_SIZE) - PAGE_SIZE;
 	new_data = bpf_unbox_ptr((void __bpfbox *) (unsigned long)loc);
 
 	memcpy(new_data, xdp->data_hard_start, size);
@@ -801,15 +800,23 @@ static __always_inline u32 bpf_prog_run_xdp(const struct bpf_prog *prog,
 	new_xdp.data = (void *)(new_xdp.data - new_xdp.data_hard_start + loc);
 	new_xdp.data_hard_start = (void *) (unsigned long) loc;
 
-	act = __bpf_prog_run(prog, xdp, BPF_DISPATCHER_FUNC(xdp));
+	act = __bpf_prog_run(prog, &new_xdp, BPF_DISPATCHER_FUNC(xdp));
 
 	if (static_branch_unlikely(&bpf_master_redirect_enabled_key)) {
+		BUG();
 		if (act == XDP_TX && netif_is_bond_slave(xdp->rxq->dev))
 			act = xdp_master_redirect(xdp);
 	}
 
-	/* memcpy(xdp->data_hard_start, new_data, size); */
-	close_bpf_scratch(size);
+	size = (u32) (new_xdp.data_end - new_xdp.data_hard_start);
+	memcpy(xdp->data_hard_start, new_data, size);
+	xdp->data_end = xdp->data_hard_start + \
+		(u32) (unsigned long)(new_xdp.data_end - new_xdp.data_hard_start);
+	xdp->data_meta = xdp->data_hard_start + \
+		(u32) (unsigned long)(new_xdp.data_meta - new_xdp.data_hard_start);
+	xdp->data = xdp->data_hard_start + \
+		(u32) (unsigned long)(new_xdp.data - new_xdp.data_hard_start);
+	close_bpf_scratch(PAGE_SIZE);
 
 	return act;
 }
