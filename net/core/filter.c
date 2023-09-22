@@ -3844,6 +3844,7 @@ BPF_CALL_2(bpf_xdp_adjust_head, struct xdp_buff *, xdp, int, offset)
 	if (metalen)
 		memmove(xdp->data_meta + offset,
 			xdp->data_meta, metalen);
+
 	xdp->data_meta += offset;
 	xdp->data = data;
 
@@ -4052,6 +4053,7 @@ BPF_CALL_2(bpf_xdp_adjust_tail, struct xdp_buff *, xdp, int, offset)
 {
 	void *data_hard_end = xdp_data_hard_end(xdp); /* use xdp->frame_sz */
 	void *data_end = xdp->data_end + offset;
+	BUG();
 
 	if (unlikely(xdp_buff_has_frags(xdp))) { /* non-linear xdp buff */
 		if (offset < 0)
@@ -4075,7 +4077,7 @@ BPF_CALL_2(bpf_xdp_adjust_tail, struct xdp_buff *, xdp, int, offset)
 
 	/* Clear memory area on grow, can contain uninit kernel memory */
 	if (offset > 0)
-		memset(xdp->data_end, 0, offset);
+		memset(bpf_unbox_ptr(xdp->data_end+1), 0, offset);
 
 	xdp->data_end = data_end;
 

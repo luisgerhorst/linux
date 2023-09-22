@@ -2,6 +2,7 @@
 /* Copyright (c) 2017 Facebook
  */
 #include <linux/bpf.h>
+#include <linux/bpfbox.h>
 #include <linux/btf.h>
 #include <linux/btf_ids.h>
 #include <linux/slab.h>
@@ -58,8 +59,10 @@ static void bpf_test_timer_leave(struct bpf_test_timer *t)
 	rcu_read_unlock();
 }
 
-static bool bpf_test_timer_continue(struct bpf_test_timer *t, int iterations,
-				    u32 repeat, int *err, u32 *duration)
+static bool __bpf_test_timer_continue(struct bpf_test_timer *t, int iterations,
+				    u32 repeat, int *err, u32 *duration,
+				    void *ctx_use, void *ctx_orig,
+				    void *packet, bool xdp)
 	__must_hold(rcu)
 {
 	t->i += iterations;
@@ -83,17 +86,30 @@ static bool bpf_test_timer_continue(struct bpf_test_timer *t, int iterations,
 		goto reset;
 	}
 
+#ifdef CONFIG_X86_64
+	t->time_spent += rdtsc_ordered() - t->time_start;
+#else
+	t->time_spent += ktime_get_ns() - t->time_start;
+#endif
+	bpf_test_timer_leave(t);
 	if (need_resched()) {
 		/* During iteration: we need to reschedule between runs. */
-#ifdef CONFIG_X86_64
-		t->time_spent += rdtsc_ordered() - t->time_start;
-#else
-		t->time_spent += ktime_get_ns() - t->time_start;
-#endif
-		bpf_test_timer_leave(t);
 		cond_resched();
-		bpf_test_timer_enter(t);
 	}
+	/* reset context */
+	if (xdp && ctx_use && ctx_orig && packet) {
+		struct xdp_buff *ctx = ctx_use;
+		struct xdp_buff *xdp_ctx_orig = ctx_orig;
+		int size = xdp_ctx_orig->data_end - xdp_ctx_orig->data_hard_start + 1;
+		memcpy(ctx, xdp_ctx_orig, sizeof(struct xdp_buff));
+		ctx->data_end        = packet + (ctx->data_end - ctx->data_hard_start);
+		ctx->data            = packet + (ctx->data - ctx->data_hard_start);
+		ctx->data_meta       = packet + (ctx->data_meta - ctx->data_hard_start);
+		ctx->data_hard_start = packet;
+		memcpy(packet, ((struct xdp_buff*)xdp_ctx_orig)->data_hard_start, size);
+	}
+	bpf_test_timer_enter(t);
+
 
 	/* Do another round. */
 	return true;
@@ -101,6 +117,14 @@ static bool bpf_test_timer_continue(struct bpf_test_timer *t, int iterations,
 reset:
 	t->i = 0;
 	return false;
+}
+
+static bool bpf_test_timer_continue(struct bpf_test_timer *t, int iterations,
+				    u32 repeat, int *err, u32 *duration)
+	__must_hold(rcu)
+{
+	return __bpf_test_timer_continue(t, iterations, repeat, err, duration,
+					 NULL, NULL, NULL, false);
 }
 
 /* We put this struct at the head of each page with a context and frame
@@ -389,8 +413,10 @@ static int bpf_test_run(struct bpf_prog *prog, void *ctx, u32 repeat,
 	struct bpf_run_ctx *old_ctx;
 	struct bpf_cg_run_ctx run_ctx;
 	struct bpf_test_timer t = { NO_MIGRATE };
+	struct xdp_buff new_ctx;
+	void *packet = NULL;
 	enum bpf_cgroup_storage_type stype;
-	int ret;
+	int ret, size;
 
 	for_each_cgroup_storage_type(stype) {
 		item.cgroup_storage[stype] = bpf_cgroup_storage_alloc(prog, stype);
@@ -402,6 +428,20 @@ static int bpf_test_run(struct bpf_prog *prog, void *ctx, u32 repeat,
 		}
 	}
 
+	if (xdp) {
+		memcpy(&new_ctx, ctx, sizeof(struct xdp_buff));
+		size = new_ctx.data_end - new_ctx.data_hard_start + 1;
+		packet = bpfbox_alloc(PAGE_SIZE);
+		BUG_ON(size > PAGE_SIZE);
+		if (!packet)
+			return -ENOMEM;
+		new_ctx.data_end        = packet + (new_ctx.data_end - new_ctx.data_hard_start);
+		new_ctx.data            = packet + (new_ctx.data - new_ctx.data_hard_start);
+		new_ctx.data_meta       = packet + (new_ctx.data_meta - new_ctx.data_hard_start);
+		new_ctx.data_hard_start = packet;
+		memcpy(packet, ((struct xdp_buff*)ctx)->data_hard_start, size);
+	}
+
 	if (!repeat)
 		repeat = 1;
 
@@ -410,16 +450,30 @@ static int bpf_test_run(struct bpf_prog *prog, void *ctx, u32 repeat,
 	do {
 		run_ctx.prog_item = &item;
 		if (xdp)
-			*retval = bpf_prog_run_xdp(prog, ctx);
+			*retval = bpf_prog_run_xdp(prog, &new_ctx);
 		else
 			*retval = bpf_prog_run(prog, ctx);
-	} while (bpf_test_timer_continue(&t, 1, repeat, &ret, time));
+	} while (__bpf_test_timer_continue(&t, 1, repeat, &ret, time, &new_ctx, ctx, packet, xdp));
 	bpf_reset_run_ctx(old_ctx);
 	bpf_test_timer_leave(&t);
 
 	for_each_cgroup_storage_type(stype)
 		bpf_cgroup_storage_free(item.cgroup_storage[stype]);
 
+	if (xdp) {
+		struct xdp_buff *orig_ctx = ctx;
+		size = new_ctx.data_end - new_ctx.data_hard_start + 1;
+		if (new_ctx.data_hard_start != packet)
+			BUG();
+		memcpy(orig_ctx->data_hard_start, new_ctx.data_hard_start, size);
+		orig_ctx->data = orig_ctx->data_hard_start + \
+			(new_ctx.data - new_ctx.data_hard_start);
+		orig_ctx->data_meta = orig_ctx->data_hard_start + \
+			(new_ctx.data_meta - new_ctx.data_hard_start);
+		orig_ctx->data_end = orig_ctx->data_hard_start + \
+			(new_ctx.data_end - new_ctx.data_hard_start);
+		bpfbox_free(packet);
+	}
 	return ret;
 }
 
@@ -1359,6 +1413,7 @@ int bpf_prog_test_run_xdp(struct bpf_prog *prog, const union bpf_attr *kattr,
 	if (unlikely(kattr->test.data_size_in > size)) {
 		void __user *data_in = u64_to_user_ptr(kattr->test.data_in);
 
+		BUG();
 		while (size < kattr->test.data_size_in) {
 			struct page *page;
 			skb_frag_t *frag;
