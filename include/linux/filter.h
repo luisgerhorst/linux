@@ -7,6 +7,7 @@
 
 #include <linux/atomic.h>
 #include <linux/bpf.h>
+#include <linux/bpfbox.h>
 #include <linux/refcount.h>
 #include <linux/compat.h>
 #include <linux/skbuff.h>
@@ -781,12 +782,34 @@ static __always_inline u32 bpf_prog_run_xdp(const struct bpf_prog *prog,
 	 * under local_bh_disable(), which provides the needed RCU protection
 	 * for accessing map entries.
 	 */
-	u32 act = __bpf_prog_run(prog, xdp, BPF_DISPATCHER_FUNC(xdp));
+
+	struct xdp_buff new_xdp;
+	u32 act, loc, size;
+	void *new_data;
+
+	size = xdp->data_end - xdp->data;
+	memcpy(&new_xdp, xdp, sizeof(struct xdp_buff));
+	size = min(prog->aux->max_pkt_offset, size);
+	size = round_up(size, 8);
+
+	loc = open_bpf_scratch(size) - size;
+	new_data = bpf_unbox_ptr((void __bpfbox *) (unsigned long)loc);
+
+	memcpy(new_data, xdp->data_hard_start, size);
+	new_xdp.data_end = (void *)(new_xdp.data_end - new_xdp.data_hard_start + loc);
+	new_xdp.data_meta = (void *)(new_xdp.data_meta - new_xdp.data_hard_start + loc);
+	new_xdp.data = (void *)(new_xdp.data - new_xdp.data_hard_start + loc);
+	new_xdp.data_hard_start = (void *) (unsigned long) loc;
+
+	act = __bpf_prog_run(prog, xdp, BPF_DISPATCHER_FUNC(xdp));
 
 	if (static_branch_unlikely(&bpf_master_redirect_enabled_key)) {
 		if (act == XDP_TX && netif_is_bond_slave(xdp->rxq->dev))
 			act = xdp_master_redirect(xdp);
 	}
+
+	/* memcpy(xdp->data_hard_start, new_data, size); */
+	close_bpf_scratch(size);
 
 	return act;
 }

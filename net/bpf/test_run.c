@@ -1396,10 +1396,12 @@ int bpf_prog_test_run_xdp(struct bpf_prog *prog, const union bpf_attr *kattr,
 	if (repeat > 1)
 		bpf_prog_change_xdp(NULL, prog);
 
-	if (do_live)
+	if (do_live) {
+		BUG();
 		ret = bpf_test_run_xdp_live(prog, &xdp, repeat, batch_size, &duration);
-	else
+	} else {
 		ret = bpf_test_run(prog, &xdp, repeat, &retval, &duration, true);
+	}
 	/* We convert the xdp_buff back to an xdp_md before checking the return
 	 * code so the reference count of any held netdevice will be decremented
 	 * even if the test run failed.
