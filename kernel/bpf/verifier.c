@@ -14041,7 +14041,7 @@ static int do_misc_fixups(struct bpf_verifier_env *env)
 				return -ENOMEM;
 
 			delta    += cnt - 1;
-			env->prog = new_prog;
+			env->prog = prog = new_prog;
 			insn      = new_prog->insnsi + i + delta;
 			continue;
 		}
@@ -14061,7 +14061,7 @@ static int do_misc_fixups(struct bpf_verifier_env *env)
 				return -ENOMEM;
 
 			delta    += cnt - 1;
-			env->prog = new_prog;
+			env->prog = prog = new_prog;
 			insn      = new_prog->insnsi + i + delta;
 			continue;
 		}
@@ -14284,8 +14284,9 @@ static int do_misc_fixups(struct bpf_verifier_env *env)
 		     insn->imm == BPF_FUNC_for_each_map_elem ||
 		     insn->imm == BPF_FUNC_map_lookup_percpu_elem)) {
 			aux = &env->insn_aux_data[i + delta];
-			if (bpf_map_ptr_poisoned(aux))
+			if (bpf_map_ptr_poisoned(aux)) {
 				goto patch_call_imm;
+			}
 
 			map_ptr = BPF_MAP_PTR(aux->map_ptr_state);
 			ops = map_ptr->ops;
@@ -14337,6 +14338,8 @@ static int do_misc_fixups(struct bpf_verifier_env *env)
 patch_map_ops_generic:
 			switch (insn->imm) {
 			case BPF_FUNC_map_lookup_elem:
+				if (ops != &percpu_array_map_ops)
+					BUG();
 				if (ops->tmp_bpfbox_map_lookup_elem) {
 					insn->imm = BPF_CALL_IMM(ops->tmp_bpfbox_map_lookup_elem);
 				} else if (ops->bpfbox_map_lookup_elem) {
@@ -14346,6 +14349,7 @@ patch_map_ops_generic:
 				}
 				continue;
 			case BPF_FUNC_map_update_elem:
+				BUG();
 				if (ops->bpfbox_map_update_elem) {
 					insn->imm = BPF_CALL_IMM(ops->bpfbox_map_update_elem);
 				} else {

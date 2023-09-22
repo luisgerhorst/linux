@@ -1347,6 +1347,8 @@ static struct bpf_map *array_of_map_alloc(union bpf_attr *attr)
 		return map;
 	}
 
+	if (inner_map_meta->ops != &htab_lru_map_ops)
+		BUG();
 	map->inner_map_meta = inner_map_meta;
 
 	return map;

@@ -481,7 +481,7 @@ static struct bpf_map *htab_map_alloc(union bpf_attr *attr)
 	bool prealloc = !(attr->map_flags & BPF_F_NO_PREALLOC);
 	struct bpf_htab *htab;
 	struct bpf_htab_inner *inner;
-	int err, i;
+	int err=ENOMEM, i;
 
 	htab = bpf_map_area_alloc(sizeof(*htab), NUMA_NO_NODE);
 	if (!htab)
@@ -745,14 +745,24 @@ static int htab_map_gen_lookup(struct bpf_map *map, struct bpf_insn *insn_buf)
 	return insn - insn_buf;
 }
 
-static __always_inline void *__htab_lru_map_lookup_elem(struct bpf_map *map,
-							void *key, const bool mark)
+static void __bpfbox *__htab_lru_map_lookup_elem(struct bpf_map_inner __bpfbox *map_inner,
+							void __bpfbox *key)
+{
+	struct htab_elem __bpfbox *l = __htab_map_lookup_elem(map_inner, key);
+
+	if (l) {
+		bpf_lru_node_set_ref(&bpf_unbox_ptr(l)->lru_node);
+		return bpf_box_ptr(bpf_unbox_ptr(l)->key + round_up(bpf_unbox_ptr(map_inner)->key_size, 8));
+	}
+
+	return NULL;
+}
+
+static __always_inline void *_htab_lru_map_lookup_elem(struct bpf_map *map, void *key)
 {
 	struct htab_elem *l = _htab_map_lookup_elem(map, key);
 
 	if (l) {
-		if (mark)
-			bpf_lru_node_set_ref(&l->lru_node);
 		return l->key + round_up(map->key_size, 8);
 	}
 
@@ -761,12 +771,12 @@ static __always_inline void *__htab_lru_map_lookup_elem(struct bpf_map *map,
 
 static void *htab_lru_map_lookup_elem(struct bpf_map *map, void *key)
 {
-	return __htab_lru_map_lookup_elem(map, key, true);
+	return bpf_unbox_ptr(__htab_lru_map_lookup_elem(bpf_box_ptr(map->map_inner), bpf_box_ptr(key)));
 }
 
 static void *htab_lru_map_lookup_elem_sys(struct bpf_map *map, void *key)
 {
-	return __htab_lru_map_lookup_elem(map, key, false);
+	return _htab_lru_map_lookup_elem(map, key);
 }
 
 static int htab_lru_map_gen_lookup(struct bpf_map *map,
@@ -2343,7 +2353,7 @@ const struct bpf_map_ops htab_lru_map_ops = {
 	.map_get_next_key = htab_map_get_next_key,
 	.map_release_uref = htab_map_free_timers,
 	.map_lookup_elem = htab_lru_map_lookup_elem,
-	.bpfbox_map_lookup_elem = __htab_map_lookup_elem,
+	.bpfbox_map_lookup_elem = __htab_lru_map_lookup_elem,
 	.map_lookup_and_delete_elem = htab_lru_map_lookup_and_delete_elem,
 	.map_lookup_elem_sys_only = htab_lru_map_lookup_elem_sys,
 	.map_update_elem = htab_lru_map_update_elem,

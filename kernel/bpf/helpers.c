@@ -33,7 +33,7 @@
  * if program is allowed to access maps, so check rcu_read_lock_held in
  * all three functions.
  */
-BPF_CALL_2(bpf_map_lookup_elem, struct bpf_map_inner *, map_inner, void *, key)
+BPF_CALL_2(bpf_map_lookup_elem, struct bpf_map_inner __bpfbox *, map_inner, void __bpfbox *, key)
 {
 	WARN_ON_ONCE(!rcu_read_lock_held() && !rcu_read_lock_bh_held());
 	if (bpf_unbox_ptr(map_inner)->map_type != BPF_MAP_TYPE_LRU_HASH)
@@ -50,8 +50,8 @@ const struct bpf_func_proto bpf_map_lookup_elem_proto = {
 	.arg2_type	= ARG_PTR_TO_MAP_KEY,
 };
 
-BPF_CALL_4(bpf_map_update_elem, struct bpf_map_inner *, map_inner, void *, key,
-	   void *, value, u64, flags)
+BPF_CALL_4(bpf_map_update_elem, struct bpf_map_inner __bpfbox *, map_inner, void __bpfbox *, key,
+	   void __bpfbox *, value, u64, flags)
 {
 	WARN_ON_ONCE(!rcu_read_lock_held() && !rcu_read_lock_bh_held());
 	if (bpf_unbox_ptr(map_inner)->map_type != BPF_MAP_TYPE_LRU_HASH)
