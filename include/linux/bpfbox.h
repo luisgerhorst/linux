@@ -11,8 +11,11 @@ void bpfbox_free(void *p);
 void __bpfbox **bpfbox_alloc_pcpu(unsigned long size);
 void bpfbox_free_pcpu(void __bpfbox **p);
 
+#define BPFBOX_CHECK_VALID(p) BUG_ON(((unsigned long)(p))>>32)
+
 #define bpf_unbox_ptr(p) \
-({									\
+({			 \
+	BPFBOX_CHECK_VALID((p));				\
 	(typeof(*(p)) __kernel __force *)(BPFBOX_START + ((unsigned long)(p) & 0xffffffff)); \
 })
 
@@ -34,9 +37,9 @@ static inline void *fast_bpf_unbox_ptr(void __bpfbox *p)
 static inline void __bpfbox *bpf_box_ptr(void *ptr)
 {
 	void __bpfbox *p = (void __bpfbox *)(ptr - BPFBOX_START);
-/* #ifdef CONFIG_DEBUG_KERNEL */
-/* 	BUG_ON((unsigned long) p >> 32); */
-/* #endif */
+#ifdef CONFIG_DEBUG_KERNEL
+	BPFBOX_CHECK_VALID(p);
+#endif
 	return p;
 }
 

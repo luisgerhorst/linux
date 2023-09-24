@@ -48,6 +48,7 @@
 #include <linux/seccomp.h>
 #include <linux/if_vlan.h>
 #include <linux/bpf.h>
+#include <linux/bpfbox.h>
 #include <linux/btf.h>
 #include <net/sch_generic.h>
 #include <net/cls_cgroup.h>
@@ -209,6 +210,27 @@ BPF_CALL_3(bpf_skb_get_nlattr_nest, struct sk_buff *, skb, u32, a, u32, x)
 	return 0;
 }
 
+BPF_CALL_4(bpfbox_skb_load_helper_8, const struct sk_buff *, skb, const void __bpfbox *,
+	   data, int, headlen, int, offset)
+{
+	u8 tmp, *ptr;
+	const int len = sizeof(tmp);
+
+	if (offset >= 0) {
+		if (skb->end - offset >= len)
+			return *(u8 *)(bpf_unbox_ptr(data) + offset);
+		else
+			BUG();
+	} else {
+		BUG();
+		ptr = bpf_internal_load_pointer_neg_helper(skb, offset, len);
+		if (likely(ptr))
+			return *(u8 *)ptr;
+	}
+
+	return -EFAULT;
+}
+
 BPF_CALL_4(bpf_skb_load_helper_8, const struct sk_buff *, skb, const void *,
 	   data, int, headlen, int, offset)
 {
@@ -229,11 +251,40 @@ BPF_CALL_4(bpf_skb_load_helper_8, const struct sk_buff *, skb, const void *,
 	return -EFAULT;
 }
 
-BPF_CALL_2(bpf_skb_load_helper_8_no_cache, const struct sk_buff *, skb,
+BPF_CALL_2(bpf_skb_load_helper_8_no_cache, const struct sk_buff *, _skb,
 	   int, offset)
 {
-	return ____bpf_skb_load_helper_8(skb, skb->data, skb->len - skb->data_len,
-					 offset);
+	const struct sk_buff *skb;
+	if (((unsigned long) _skb) >> 32) {
+		skb = _skb;
+		return ____bpf_skb_load_helper_8(skb, skb->data,
+						skb->len - skb->data_len, offset);
+	} else {
+		skb = bpf_unbox_ptr(_skb);
+		return ____bpfbox_skb_load_helper_8(skb, (void __bpfbox *)skb->data,
+						skb->len - skb->data_len, offset);
+	}
+}
+
+BPF_CALL_4(bpfbox_skb_load_helper_16, const struct sk_buff *, skb, const void __bpfbox *,
+	   data, int, headlen, int, offset)
+{
+	__be16 tmp, *ptr;
+	const int len = sizeof(tmp);
+
+	if (offset >= 0) {
+		if (skb->end - offset >= len)
+			return get_unaligned_be16(bpf_unbox_ptr(data) + offset);
+		else
+			BUG();
+	} else {
+		BUG();
+		ptr = bpf_internal_load_pointer_neg_helper(skb, offset, len);
+		if (likely(ptr))
+			return get_unaligned_be16(ptr);
+	}
+
+	return -EFAULT;
 }
 
 BPF_CALL_4(bpf_skb_load_helper_16, const struct sk_buff *, skb, const void *,
@@ -256,11 +307,40 @@ BPF_CALL_4(bpf_skb_load_helper_16, const struct sk_buff *, skb, const void *,
 	return -EFAULT;
 }
 
-BPF_CALL_2(bpf_skb_load_helper_16_no_cache, const struct sk_buff *, skb,
+BPF_CALL_2(bpf_skb_load_helper_16_no_cache, const struct sk_buff *, _skb,
 	   int, offset)
 {
-	return ____bpf_skb_load_helper_16(skb, skb->data, skb->len - skb->data_len,
-					  offset);
+	const struct sk_buff *skb;
+	if (((unsigned long) _skb) >> 32) {
+		skb = _skb;
+		return ____bpf_skb_load_helper_16(skb, skb->data,
+						skb->len - skb->data_len, offset);
+	} else {
+		skb = bpf_unbox_ptr(_skb);
+		return ____bpfbox_skb_load_helper_16(skb, (void __bpfbox *)skb->data,
+						skb->len - skb->data_len, offset);
+	}
+}
+
+BPF_CALL_4(bpfbox_skb_load_helper_32, const struct sk_buff *, skb, const void __bpfbox *,
+	   data, int, headlen, int, offset)
+{
+	__be32 tmp, *ptr;
+	const int len = sizeof(tmp);
+
+	if (likely(offset >= 0)) {
+		if (skb->end - offset >= len)
+			return get_unaligned_be32(bpf_unbox_ptr(data) + offset);
+		else
+			BUG();
+	} else {
+		BUG();
+		ptr = bpf_internal_load_pointer_neg_helper(skb, offset, len);
+		if (likely(ptr))
+			return get_unaligned_be32(ptr);
+	}
+
+	return -EFAULT;
 }
 
 BPF_CALL_4(bpf_skb_load_helper_32, const struct sk_buff *, skb, const void *,
@@ -283,11 +363,19 @@ BPF_CALL_4(bpf_skb_load_helper_32, const struct sk_buff *, skb, const void *,
 	return -EFAULT;
 }
 
-BPF_CALL_2(bpf_skb_load_helper_32_no_cache, const struct sk_buff *, skb,
+BPF_CALL_2(bpf_skb_load_helper_32_no_cache, const struct sk_buff *, _skb,
 	   int, offset)
 {
-	return ____bpf_skb_load_helper_32(skb, skb->data, skb->len - skb->data_len,
-					  offset);
+	const struct sk_buff *skb;
+	if (((unsigned long) _skb) >> 32) {
+		skb = _skb;
+		return ____bpf_skb_load_helper_32(skb, skb->data,
+						skb->len - skb->data_len, offset);
+	} else {
+		skb = bpf_unbox_ptr(_skb);
+		return ____bpfbox_skb_load_helper_32(skb, (void __bpfbox *)skb->data,
+						skb->len - skb->data_len, offset);
+	}
 }
 
 static u32 convert_skb_access(int skb_field, int dst_reg, int src_reg,
@@ -3824,26 +3912,27 @@ const struct bpf_func_proto bpf_xdp_get_buff_len_trace_proto = {
 	.arg1_btf_id	= &bpf_xdp_get_buff_len_bpf_ids[0],
 };
 
-static unsigned long xdp_get_metalen(const struct xdp_buff *xdp)
+static unsigned long xdp_get_metalen(const struct bpfbox_xdp_buff *xdp)
 {
-	return xdp_data_meta_unsupported(xdp) ? 0 :
+	return bpfbox_xdp_data_meta_unsupported(xdp) ? 0 :
 	       xdp->data - xdp->data_meta;
 }
 
-BPF_CALL_2(bpf_xdp_adjust_head, struct xdp_buff *, xdp, int, offset)
+BPF_CALL_2(bpf_xdp_adjust_head, struct bpfbox_xdp_buff __bpfbox *, _xdp, int, offset)
 {
-	void *xdp_frame_end = xdp->data_hard_start + sizeof(struct xdp_frame);
+	struct bpfbox_xdp_buff *xdp = bpf_unbox_ptr(_xdp);
+	void __bpfbox *xdp_frame_end = xdp->data_hard_start + sizeof(struct xdp_frame);
 	unsigned long metalen = xdp_get_metalen(xdp);
-	void *data_start = xdp_frame_end + metalen;
-	void *data = xdp->data + offset;
+	void __bpfbox *data_start = xdp_frame_end + metalen;
+	void __bpfbox  *data = xdp->data + offset;
 
 	if (unlikely(data < data_start ||
 		     data > xdp->data_end - ETH_HLEN))
 		return -EINVAL;
 
 	if (metalen)
-		memmove(xdp->data_meta + offset,
-			xdp->data_meta, metalen);
+		memmove(bpf_unbox_ptr(xdp->data_meta + offset),
+			bpf_unbox_ptr(xdp->data_meta), metalen);
 
 	xdp->data_meta += offset;
 	xdp->data = data;

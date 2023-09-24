@@ -1823,12 +1823,12 @@ static inline bool bpf_allow_ptr_to_map_access(void)
 
 static inline bool bpf_bypass_spec_v1(void)
 {
-	return perfmon_capable();
+	return true;
 }
 
 static inline bool bpf_bypass_spec_v4(void)
 {
-	return perfmon_capable();
+	return true;
 }
 
 int bpf_map_new_fd(struct bpf_map *map, int flags);

@@ -612,6 +612,17 @@ static __always_inline u32 __bpf_prog_run(const struct bpf_prog *prog,
 	return ret;
 }
 
+static __always_inline u32 bpf_prog_run_skb(const struct bpf_prog *prog, struct sk_buff *skb)
+{
+	int ret;
+	skb->head = bpf_box_ptr(skb->head);
+	skb->data = bpf_box_ptr(skb->data);
+	ret = __bpf_prog_run(prog, bpf_box_ptr(skb), bpf_dispatcher_nop_func);
+	skb->data = bpf_unbox_ptr(skb->data);
+	skb->head = bpf_unbox_ptr(skb->head);
+	return ret;
+}
+
 static __always_inline u32 bpf_prog_run(const struct bpf_prog *prog, const void *ctx)
 {
 	return __bpf_prog_run(prog, ctx, bpf_dispatcher_nop_func);
@@ -788,9 +799,9 @@ static __always_inline u32 bpf_prog_run_xdp(const struct bpf_prog *prog,
 	xdp->data = bpf_box_ptr(xdp->data);
 	xdp->data_hard_start = bpf_box_ptr(xdp->data_hard_start);
 	xdp->data_end = bpf_box_ptr(xdp->data_end);
-	xdp->data = bpf_box_ptr(xdp->data_meta);
+	xdp->data_meta = bpf_box_ptr(xdp->data_meta);
 
-	act = __bpf_prog_run(prog, xdp, BPF_DISPATCHER_FUNC(xdp));
+	act = __bpf_prog_run(prog, bpf_box_ptr(xdp), BPF_DISPATCHER_FUNC(xdp));
 
 	if (static_branch_unlikely(&bpf_master_redirect_enabled_key)) {
 		BUG();

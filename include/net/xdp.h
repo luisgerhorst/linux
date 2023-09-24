@@ -85,6 +85,17 @@ struct xdp_buff {
 	u32 flags; /* supported values defined in xdp_buff_flags */
 };
 
+struct bpfbox_xdp_buff {
+	void __bpfbox *data;
+	void __bpfbox *data_end;
+	void __bpfbox *data_meta;
+	void __bpfbox *data_hard_start;
+	struct xdp_rxq_info *rxq;
+	struct xdp_txq_info *txq;
+	u32 frame_sz; /* frame size to deduce data_hard_end/reserved tailroom*/
+	u32 flags; /* supported values defined in xdp_buff_flags */
+};
+
 static __always_inline bool xdp_buff_has_frags(struct xdp_buff *xdp)
 {
 	return !!(xdp->flags & XDP_FLAGS_HAS_FRAGS);
@@ -389,6 +400,12 @@ xdp_set_data_meta_invalid(struct xdp_buff *xdp)
 
 static __always_inline bool
 xdp_data_meta_unsupported(const struct xdp_buff *xdp)
+{
+	return unlikely(xdp->data_meta > xdp->data);
+}
+
+static __always_inline bool
+bpfbox_xdp_data_meta_unsupported(const struct bpfbox_xdp_buff *xdp)
 {
 	return unlikely(xdp->data_meta > xdp->data);
 }

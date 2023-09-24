@@ -13462,13 +13462,14 @@ apply_patch_buffer:
 static int convert_ctx_accesses(struct bpf_verifier_env *env)
 {
 	const struct bpf_verifier_ops *ops = env->ops;
-	int i, cnt, size, ctx_field_size, delta = 0;
+	int i, j, cnt, size, ctx_field_size, delta = 0;
 	const int insn_cnt = env->prog->len;
 	struct bpf_insn insn_buf[16], *insn;
 	u32 target_size, size_default, off;
 	struct bpf_prog *new_prog;
 	enum bpf_access_type type;
 	bool is_narrower_load;
+	struct bpf_insn_aux_data tmp_aux_data;
 
 	if (ops->gen_prologue || env->seen_direct_write) {
 		if (!ops->gen_prologue) {
@@ -13626,7 +13627,13 @@ static int convert_ctx_accesses(struct bpf_verifier_env *env)
 			}
 		}
 
+		memcpy(&tmp_aux_data, &env->insn_aux_data[i+delta], sizeof(tmp_aux_data));
 		new_prog = bpf_patch_insn_data(env, i + delta, insn_buf, cnt);
+		/* We assume that duplicating the information on the
+		 * added instructions are fine. I would be mad if it's
+		 * not true */
+		for (j = 0; j < cnt - 1; j++)
+			memcpy(&env->insn_aux_data[i], &tmp_aux_data, sizeof(tmp_aux_data));
 		if (!new_prog)
 			return -ENOMEM;
 
@@ -14029,27 +14036,9 @@ static int do_misc_fixups(struct bpf_verifier_env *env)
 		     BPF_CLASS(insn->code) == BPF_STX ||
 		     BPF_CLASS(insn->code) == BPF_ST) &&
 		    (env->insn_aux_data[i + delta].ptr_type == PTR_TO_MAP_VALUE ||
-		     env->insn_aux_data[i + delta].ptr_type == PTR_TO_STACK)) {
-			struct bpf_insn patch[] = {
-				BPF_ST_BOXMEM(),
-				*insn,
-			};
-
-			cnt = ARRAY_SIZE(patch);
-			new_prog = bpf_patch_insn_data(env, i + delta, patch, cnt);
-			if (!new_prog)
-				return -ENOMEM;
-
-			delta    += cnt - 1;
-			env->prog = prog = new_prog;
-			insn      = new_prog->insnsi + i + delta;
-			continue;
-		}
-
-		if ((BPF_CLASS(insn->code) == BPF_LDX ||
-		     BPF_CLASS(insn->code) == BPF_STX ||
-		     BPF_CLASS(insn->code) == BPF_ST) &&
-		    (env->insn_aux_data[i + delta].ptr_type == PTR_TO_PACKET)) {
+		     env->insn_aux_data[i + delta].ptr_type == PTR_TO_STACK ||
+		     env->insn_aux_data[i + delta].ptr_type == PTR_TO_CTX ||
+		     env->insn_aux_data[i + delta].ptr_type == PTR_TO_PACKET)) {
 			struct bpf_insn patch[] = {
 				BPF_ST_BOXMEM(),
 				*insn,

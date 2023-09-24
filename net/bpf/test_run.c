@@ -406,18 +406,38 @@ static int bpf_test_run_xdp_live(struct bpf_prog *prog, struct xdp_buff *ctx,
 	return ret;
 }
 
+static void copy_skb_to_skb(struct sk_buff *to, struct sk_buff *from)
+{
+	struct qdisc_skb_cb *cb_from = (struct qdisc_skb_cb *)from->cb;
+	struct qdisc_skb_cb *cb_to = (struct qdisc_skb_cb *)to->cb;
+
+	to->mark = from->mark;
+	to->priority = from->priority;
+	to->skb_iif = from->skb_iif;
+	to->tstamp = from->tstamp;
+	memcpy(&cb_to->data, &cb_from->data, QDISC_CB_PRIV_LEN);
+
+	cb_to->pkt_len = cb_from->pkt_len;
+
+	skb_shinfo(to)->gso_segs = skb_shinfo(from)->gso_segs;
+	skb_shinfo(to)->hwtstamps.hwtstamp = skb_shinfo(from)->hwtstamps.hwtstamp;
+}
+
 static int bpf_test_run(struct bpf_prog *prog, void *ctx, u32 repeat,
 			u32 *retval, u32 *time, bool xdp)
 {
-	struct bpf_prog_array_item item = {.prog = prog};
+	struct bpf_prog_array_item
+		item = {.prog = prog};
 	struct bpf_run_ctx *old_ctx;
 	struct bpf_cg_run_ctx run_ctx;
 	struct bpf_test_timer t = { NO_MIGRATE };
-	struct xdp_buff new_ctx;
+	struct xdp_buff *new_ctx = NULL;
+	struct sk_buff *new_skb = NULL;
 	void *packet = NULL;
 	enum bpf_cgroup_storage_type stype;
 	int ret, size;
 
+	BUG_ON(prog->type != BPF_PROG_TYPE_XDP && prog->type != BPF_PROG_TYPE_SOCKET_FILTER);
 	for_each_cgroup_storage_type(stype) {
 		item.cgroup_storage[stype] = bpf_cgroup_storage_alloc(prog, stype);
 		if (IS_ERR(item.cgroup_storage[stype])) {
@@ -429,32 +449,70 @@ static int bpf_test_run(struct bpf_prog *prog, void *ctx, u32 repeat,
 	}
 
 	if (xdp) {
-		memcpy(&new_ctx, ctx, sizeof(struct xdp_buff));
-		size = new_ctx.data_end - new_ctx.data_hard_start + 1;
+		struct xdp_buff *orig_ctx = ctx;
+		size = orig_ctx->data_end - orig_ctx->data_hard_start + 1;
 		packet = bpfbox_alloc(PAGE_SIZE);
 		BUG_ON(size > PAGE_SIZE);
 		if (!packet)
 			return -ENOMEM;
-		new_ctx.data_end        = packet + (new_ctx.data_end - new_ctx.data_hard_start);
-		new_ctx.data            = packet + (new_ctx.data - new_ctx.data_hard_start);
-		new_ctx.data_meta       = packet + (new_ctx.data_meta - new_ctx.data_hard_start);
-		new_ctx.data_hard_start = packet;
-		memcpy(packet, ((struct xdp_buff*)ctx)->data_hard_start, size);
+		memcpy(packet, orig_ctx->data_hard_start, size);
+	} else {
+		struct sk_buff *orig_ctx = ctx;
+		size = orig_ctx->tail + SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+		packet = bpfbox_alloc(size);
+		if (!packet)
+			return -ENOMEM;
+		memcpy(packet, orig_ctx->head, size);
 	}
 
 	if (!repeat)
 		repeat = 1;
 
 	bpf_test_timer_enter(&t);
+	if (xdp) {
+		new_ctx = bpfbox_alloc(sizeof(struct xdp_buff));
+		memcpy(new_ctx, ctx, sizeof(struct xdp_buff));
+		new_ctx->data_end        = packet + (new_ctx->data_end - new_ctx->data_hard_start);
+		new_ctx->data            = packet + (new_ctx->data - new_ctx->data_hard_start);
+		new_ctx->data_meta       = packet + (new_ctx->data_meta - new_ctx->data_hard_start);
+		new_ctx->data_hard_start = packet;
+	} else {
+		struct sk_buff *old_skb = ctx;
+		new_skb = bpfbox_alloc(sizeof(struct sk_buff));
+		new_skb->head     = packet;
+		new_skb->data     = packet + (old_skb->data - old_skb->head);
+		new_skb->tail     = old_skb->tail;
+		new_skb->end      = old_skb->end;
+		new_skb->len      = old_skb->len;
+		new_skb->data_len = old_skb->data_len;
+		copy_skb_to_skb(new_skb, old_skb);
+	}
 	old_ctx = bpf_set_run_ctx(&run_ctx.run_ctx);
 	do {
 		run_ctx.prog_item = &item;
 		if (xdp)
-			*retval = bpf_prog_run_xdp(prog, &new_ctx);
+			*retval = bpf_prog_run_xdp(prog, new_ctx);
 		else
-			*retval = bpf_prog_run(prog, ctx);
-	} while (__bpf_test_timer_continue(&t, 1, repeat, &ret, time, &new_ctx, ctx, packet, xdp));
+			*retval = bpf_prog_run_skb(prog, new_skb);
+	} while (__bpf_test_timer_continue(&t, 1, repeat, &ret, time, new_ctx, ctx, packet, xdp));
 	bpf_reset_run_ctx(old_ctx);
+
+	if (xdp) {
+		struct xdp_buff *orig_ctx = ctx;
+		size = new_ctx->data_end - new_ctx->data_hard_start + 1;
+		if (new_ctx->data_hard_start != packet)
+			BUG();
+		orig_ctx->data = orig_ctx->data_hard_start + \
+			(new_ctx->data - new_ctx->data_hard_start);
+		orig_ctx->data_meta = orig_ctx->data_hard_start + \
+			(new_ctx->data_meta - new_ctx->data_hard_start);
+		orig_ctx->data_end = orig_ctx->data_hard_start + \
+			(new_ctx->data_end - new_ctx->data_hard_start);
+		bpfbox_free(new_ctx);
+	} else {
+		bpfbox_free(new_skb);
+	}
+
 	bpf_test_timer_leave(&t);
 
 	for_each_cgroup_storage_type(stype)
@@ -462,16 +520,10 @@ static int bpf_test_run(struct bpf_prog *prog, void *ctx, u32 repeat,
 
 	if (xdp) {
 		struct xdp_buff *orig_ctx = ctx;
-		size = new_ctx.data_end - new_ctx.data_hard_start + 1;
-		if (new_ctx.data_hard_start != packet)
-			BUG();
-		memcpy(orig_ctx->data_hard_start, new_ctx.data_hard_start, size);
-		orig_ctx->data = orig_ctx->data_hard_start + \
-			(new_ctx.data - new_ctx.data_hard_start);
-		orig_ctx->data_meta = orig_ctx->data_hard_start + \
-			(new_ctx.data_meta - new_ctx.data_hard_start);
-		orig_ctx->data_end = orig_ctx->data_hard_start + \
-			(new_ctx.data_end - new_ctx.data_hard_start);
+		memcpy(orig_ctx->data_hard_start, packet, size);
+		bpfbox_free(packet);
+	} else {
+		/* probably don't need to copy skb stuff */
 		bpfbox_free(packet);
 	}
 	return ret;
