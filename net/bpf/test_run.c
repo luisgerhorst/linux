@@ -100,16 +100,14 @@ static bool __bpf_test_timer_continue(struct bpf_test_timer *t, int iterations,
 	if (xdp && ctx_use && ctx_orig && packet) {
 		struct xdp_buff *ctx = ctx_use;
 		struct xdp_buff *xdp_ctx_orig = ctx_orig;
-		int size = xdp_ctx_orig->data_end - xdp_ctx_orig->data_hard_start + 1;
+		/* int size = xdp_ctx_orig->data_end - xdp_ctx_orig->data_hard_start + 1; */
 		memcpy(ctx, xdp_ctx_orig, sizeof(struct xdp_buff));
 		ctx->data_end        = packet + (ctx->data_end - ctx->data_hard_start);
 		ctx->data            = packet + (ctx->data - ctx->data_hard_start);
 		ctx->data_meta       = packet + (ctx->data_meta - ctx->data_hard_start);
 		ctx->data_hard_start = packet;
-		memcpy(packet, ((struct xdp_buff*)xdp_ctx_orig)->data_hard_start, size);
 	}
 	bpf_test_timer_enter(t);
-
 
 	/* Do another round. */
 	return true;
@@ -490,16 +488,21 @@ static int bpf_test_run(struct bpf_prog *prog, void *ctx, u32 repeat,
 	old_ctx = bpf_set_run_ctx(&run_ctx.run_ctx);
 	do {
 		run_ctx.prog_item = &item;
-		if (xdp)
+		if (xdp) {
+			struct xdp_buff *xdp_ctx_orig = ctx;
+			size = xdp_ctx_orig->data - xdp_ctx_orig->data_hard_start;
+			size += min(prog->aux->max_pkt_offset, (unsigned int)(xdp_ctx_orig->data_end - xdp_ctx_orig->data)) + 1;
+			memcpy(packet, ((struct xdp_buff*)xdp_ctx_orig)->data_hard_start, size);
 			*retval = bpf_prog_run_xdp(prog, new_ctx);
-		else
+		} else {
 			*retval = bpf_prog_run_skb(prog, new_skb);
+		}
 	} while (__bpf_test_timer_continue(&t, 1, repeat, &ret, time, new_ctx, ctx, packet, xdp));
 	bpf_reset_run_ctx(old_ctx);
 
 	if (xdp) {
 		struct xdp_buff *orig_ctx = ctx;
-		size = new_ctx->data_end - new_ctx->data_hard_start + 1;
+		/* size = new_ctx->data_end - new_ctx->data_hard_start + 1; */
 		if (new_ctx->data_hard_start != packet)
 			BUG();
 		orig_ctx->data = orig_ctx->data_hard_start + \
