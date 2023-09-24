@@ -13633,7 +13633,7 @@ static int convert_ctx_accesses(struct bpf_verifier_env *env)
 		 * added instructions are fine. I would be mad if it's
 		 * not true */
 		for (j = 0; j < cnt - 1; j++)
-			memcpy(&env->insn_aux_data[i], &tmp_aux_data, sizeof(tmp_aux_data));
+			memcpy(&env->insn_aux_data[i+delta+j], &tmp_aux_data, sizeof(tmp_aux_data));
 		if (!new_prog)
 			return -ENOMEM;
 

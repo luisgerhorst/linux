@@ -409,10 +409,16 @@ static void copy_skb_to_skb(struct sk_buff *to, struct sk_buff *from)
 	struct qdisc_skb_cb *cb_from = (struct qdisc_skb_cb *)from->cb;
 	struct qdisc_skb_cb *cb_to = (struct qdisc_skb_cb *)to->cb;
 
+	to->len = from->len;
 	to->mark = from->mark;
 	to->priority = from->priority;
 	to->skb_iif = from->skb_iif;
 	to->tstamp = from->tstamp;
+	to->vlan_present = from->vlan_present;
+	to->vlan_proto = from->vlan_proto;
+	to->pkt_type = from->pkt_type;
+	to->protocol = from->protocol;
+	to->hash = from->hash;
 	memcpy(&cb_to->data, &cb_from->data, QDISC_CB_PRIV_LEN);
 
 	cb_to->pkt_len = cb_from->pkt_len;
