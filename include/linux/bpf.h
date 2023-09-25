@@ -1411,7 +1411,9 @@ static inline void bpf_trampoline_unlink_cgroup_shim(struct bpf_prog *prog)
 
 struct bpf_map_inner {
 	enum bpf_map_type map_type;
+	u32 map_flags;
 	u32 key_size;
+	u32 value_size;
 	u32 max_entries;
 };
 

@@ -2,12 +2,102 @@
 #define _HASHTAB_H 1
 
 #include <linux/bpf.h>
+#include <linux/bpfbox.h>
 #include <linux/jhash.h>
+#include <asm/local.h>
 /* #include <linux/rculist_nulls.h> */
+#include <linux/rcupdate.h>
 #include <linux/bpf_mem_alloc.h>
 #include "percpu_freelist.h"
 #include "bpf_lru_list.h"
 
+#include <linux/poison.h>
+#include <linux/const.h>
+
+#define unbox bpf_unbox_ptr
+#define box bpf_box_ptr
+
+struct bb_hlist_nulls_head {
+	struct bb_hlist_nulls_node __bpfbox *first;
+};
+
+struct bb_hlist_nulls_node {
+	struct bb_hlist_nulls_node __bpfbox *next;
+	struct bb_hlist_nulls_node __bpfbox * __bpfbox *pprev;
+};
+
+#define __BB_WRITE_ONCE(x, val)						\
+do {									\
+	*(unbox((volatile typeof(x) *)&(x))) = (val);			\
+} while (0)
+
+#define BB_WRITE_ONCE(x, val)						\
+do {									\
+	compiletime_assert_rwonce_type(x);				\
+	__BB_WRITE_ONCE((x), (val));					\
+} while (0)
+
+#define BB_READ_ONCE(x)						\
+({								\
+	(*unbox((const volatile typeof(x) *)&(x)));		\
+})
+
+#define bb_rcu_assign_pointer(p, v)	\
+do {					\
+	barrier();			\
+	BB_WRITE_ONCE((p), (v));	\
+} while (0)
+
+#define BB_NULLS_MARKER(value) (1UL | (((long)value) << 1))
+
+/* ptr here is ordinary pointer */
+#define BB_INIT_HLIST_NULLS_HEAD(ptr, nulls) \
+	(*unbox(&(ptr)->first) = (struct bb_hlist_nulls_node __bpfbox *) NULLS_MARKER(nulls))
+
+static inline int bb_is_a_nulls(const struct bb_hlist_nulls_node __bpfbox *ptr)
+{
+	return ((unsigned long)ptr & 1);
+}
+
+static inline unsigned long bb_get_nulls_value(const struct bb_hlist_nulls_node __bpfbox *ptr)
+{
+	return ((unsigned long)ptr) >> 1;
+}
+
+#define bb_hlist_nulls_entry(ptr, type, member) box_container_of(ptr,type,member)
+
+#define bb_hlist_nulls_entry_safe(ptr, type, member)	\
+	({ typeof(ptr) ____ptr = (ptr); \
+	   !bb_is_a_nulls(____ptr) ? bb_hlist_nulls_entry(____ptr, type, member) : NULL; \
+	})
+
+#define bb_hlist_nulls_entry(ptr, type, member) box_container_of(ptr,type,member)
+
+#define bb_hlist_nulls_first_rcu(head)					\
+	((struct bb_hlist_nulls_node __bpfbox*)*unbox(((struct bb_hlist_nulls_node __rcu __force **)&(head)->first)))
+
+#define bb_hlist_nulls_next_rcu(node) \
+	((struct bb_hlist_nulls_node __bpfbox*)(*unbox(((struct bb_hlist_nulls_node __rcu __force **)&(node)->next))))
+
+#define bb_hlist_nulls_for_each_entry_rcu(tpos, pos, head, member)		\
+	for (({barrier();}),							\
+	     pos = BB_READ_ONCE((head)->first);					\
+		(!bb_is_a_nulls(pos)) &&					\
+		({ tpos = bb_hlist_nulls_entry(pos, typeof(*tpos), member); 1; }); \
+		pos = BB_READ_ONCE(pos->next))
+
+#define bb_hlist_nulls_for_each_entry_safe(tpos, pos, head, member)		\
+	for (({barrier();}),							\
+	     pos = BB_READ_ONCE((head)->first);					\
+		(!bb_is_a_nulls(pos)) &&					\
+		({ tpos = bb_hlist_nulls_entry(pos, typeof(*tpos), member);	\
+		pos = BB_READ_ONCE(pos->next); 1; });)
+
+#define bb_hlist_nulls_for_each_entry(tpos, pos, head, member)			\
+	for (pos = *unbox(&(head)->first);				\
+	(!bb_is_a_nulls(pos)) &&					\
+		({ tpos = bb_hlist_nulls_entry(pos, typeof(*tpos), member); 1;}); \
+	     pos = *unbox(&pos->next))
 /*
  * The bucket lock has two protection scopes:
  *
@@ -54,7 +144,7 @@
  * safe to always use raw spinlock for bucket lock.
  */
 struct bucket {
-	struct hlist_nulls_head head;
+	struct bb_hlist_nulls_head head;
 	raw_spinlock_t raw_lock;
 };
 
@@ -65,8 +155,10 @@ struct bpf_htab_inner {
 	struct bpf_map_inner map_inner;
 	struct bpf_htab *htab;
 	struct bucket __bpfbox *buckets;
+	struct htab_elem __bpfbox *__bpfbox *extra_elems;
 	u32 hashrnd;
 	u32 n_buckets;
+	local_t __bpfbox * __bpfbox *map_locked;
 };
 
 struct bpf_htab {
@@ -74,12 +166,12 @@ struct bpf_htab {
 	struct bpf_mem_alloc ma;
 	struct bpf_mem_alloc pcpu_ma;
 	struct bucket *buckets;
+	struct htab_elem *__bpfbox *extra_elems;
 	void *elems;
 	union {
 		struct pcpu_freelist freelist;
 		struct bpf_lru lru;
 	};
-	struct htab_elem *__percpu *extra_elems;
 	/* number of elements in non-preallocated hashtable are kept
 	 * in either pcount or count
 	 */
@@ -90,14 +182,13 @@ struct bpf_htab {
 	u32 elem_size;	/* size of each element in bytes */
 	u32 hashrnd;
 	struct lock_class_key lockdep_key;
-	int __percpu *map_locked[HASHTAB_MAP_LOCK_COUNT];
 };
 #define htab_inner(htab) (container_of((htab)->map.map_inner, struct bpf_htab_inner, map_inner))
 
 /* each htab element is struct htab_elem + key + value */
 struct htab_elem {
 	union {
-		struct hlist_nulls_node hash_node;
+		struct bb_hlist_nulls_node hash_node;
 		struct {
 			void *padding;
 			union {

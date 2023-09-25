@@ -377,25 +377,32 @@ static int emit_jump(u8 **pprog, void *func, void *ip)
 static int emit_open_scratch(u8 **pprog, u32 stack_depth, void *ip, bool tail_call_reachable)
 {
 	u8 *prog = *pprog;
+
 	if (stack_depth) {
-		if (!tail_call_reachable) {
-			EMIT1(0x57);	/* push rdi */
-		} else {
-			EMIT1(0x57);	/* push rdi */
-			/* TODO: FIXME */
-		}
-		EMIT1(0xBF);
+		/* mov esi, $stack_depth */
+		EMIT1(0xBE);
 		EMIT(round_up(stack_depth, 8), 4);
-		emit_call(&prog, open_bpf_scratch, ip+6);
-		if (!tail_call_reachable) {
-			EMIT1(0x5F);	/* pop rdi */
-		} else {
-			EMIT1(0x5F);	/* pop rdi */
-			/* TODO: FIXME */
-		}
-		EMIT1(0x55);		/* push rbp */
-		EMIT2(0x89, 0xC5);	/* mov    ebp,eax */
+
+		/* mov edx, &bpfbox_scratch_region */
+		EMIT1(0xBA);
+		EMIT((unsigned int)(unsigned long)(&bpfbox_scratch_region), 4);
+
+		/* add rdx, qword ptr gs[rip + &this_cpu_off] */
+		EMIT4(0x65, 0x48, 0x03, 0x15);
+		EMIT((int)((void *)(&this_cpu_off) - (ip + 18)), 4);
+
+		/* mov ebp, esi */
+		EMIT2(0x89, 0xf5);
+
+		/* xadd dword ptr [rcx + offsetof(region->sp)], ebp */
+		EMIT3(0x0F, 0xC1, 0x6A);
+		BUG_ON(offsetof(struct bpfbox_scratch_region, sp) > 128);
+		EMIT1(offsetof(struct bpfbox_scratch_region, sp));
+
+		/* add ebp, esi */
+		EMIT2(0x01, 0xf5);
 	}
+
 	*pprog = prog;
 	return 0;
 }
@@ -403,18 +410,24 @@ static int emit_open_scratch(u8 **pprog, u32 stack_depth, void *ip, bool tail_ca
 static void emit_close_scratch(u8 **pprog, u32 stack_depth, void *ip, bool doing_tail_call)
 {
 	u8 *prog = *pprog;
+
 	if (stack_depth) {
-		EMIT1(0x5D);	/* pop rbp  */
-		EMIT1(0x50);	/* push rax */
-		/* TODO Fix doing_tail_call */
-
-		/* mov rdi, $stack_depth */
-		EMIT1(0xBF);
+		/* mov esi, $stack_depth */
+		EMIT1(0xBE);
 		EMIT(round_up(stack_depth, 8), 4);
-		emit_call(&prog, close_bpf_scratch, ip+7);
 
-		EMIT1(0x58);	/* pop rax */
+		/* mov edx, &bpfbox_scratch_region */
+		EMIT1(0xBA);
+		EMIT((unsigned int)(unsigned long)(&bpfbox_scratch_region), 4);
 
+		/* add rdx, qword ptr gs[rip + &this_cpu_off] */
+		EMIT4(0x65, 0x48, 0x03, 0x15);
+		EMIT((int)((void *)(&this_cpu_off) - (ip + 18)), 4);
+
+		/* sub dword ptr [rdx + offsetof(region->sp)], esi */
+		EMIT2(0x29, 0x72);
+		BUG_ON(offsetof(struct bpfbox_scratch_region, sp) > 128);
+		EMIT1(offsetof(struct bpfbox_scratch_region, sp));
 	}
 	*pprog = prog;
 }
@@ -1902,7 +1915,7 @@ emit_jmp:
 					image + addrs[i - 1] + (prog - temp), false);
 			pop_callee_regs(&prog, callee_regs_used);
 			EMIT2(0x41, 0x5C);   /* pop r12 */
-			EMIT1(0xC9);         /* leave */
+			EMIT1(0x5D);	/* pop rbp */
 			emit_return(&prog, image + addrs[i - 1] + (prog - temp));
 			break;
 

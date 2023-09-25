@@ -9,7 +9,15 @@
 void *bpfbox_alloc(unsigned long size);
 void bpfbox_free(void *p);
 void __bpfbox **bpfbox_alloc_pcpu(unsigned long size);
-void bpfbox_free_pcpu(void __bpfbox **p);
+void bpfbox_free_pcpu(void *p);
+
+#define box_container_of(ptr, type, member) ({				\
+	void __bpfbox *__mptr = (void __bpfbox *)(ptr);			\
+	static_assert(__same_type(*(ptr), ((type *)0)->member) ||	\
+		      __same_type(*(ptr), void),			\
+		      "pointer type mismatch in container_of()");	\
+	((type __bpfbox *)(__mptr - offsetof(type, member))); })
+
 
 #ifdef CONFIG_DEBUG_KERNEL
 #define BPFBOX_CHECK_VALID(p)
@@ -61,7 +69,7 @@ struct bpfbox_scratch_region {
 DECLARE_PER_CPU(struct bpfbox_scratch_region, bpfbox_scratch_region);
 
 int init_bpfbox_stack(void);
-unsigned int open_bpf_scratch(int size);
+void __bpfbox *open_bpf_scratch(int size);
 void close_bpf_scratch(int size);
 
 #endif
