@@ -713,11 +713,11 @@ static inline struct bb_hlist_nulls_head *select_bucket(struct bpf_htab *htab, u
 static struct htab_elem *lookup_elem_raw(struct bb_hlist_nulls_head *head, u32 hash,
 					 void *key, u32 key_size)
 {
-	struct bb_hlist_nulls_node *n;
-	struct htab_elem *l;
+	struct bb_hlist_nulls_node __bpfbox *n;
+	struct htab_elem __bpfbox *l;
 
 	bb_hlist_nulls_for_each_entry_rcu(l, n, head, hash_node)
-		if (l->hash == hash && !memcmp(&l->key, key, key_size))
+		if (*unbox(&l->hash) == hash && !memcmp(unbox(&l->key), key, key_size))
 			return l;
 
 	return NULL;
