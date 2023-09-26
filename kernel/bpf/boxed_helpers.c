@@ -65,6 +65,42 @@ static inline void bb_hlist_nulls_del_rcu(struct bb_hlist_nulls_node __bpfbox *n
 	BB_WRITE_ONCE(n->pprev, LIST_POISON2);
 }
 
+
+static struct bb_pcpu_freelist_node __bpfbox *___bb_pcpu_freelist_pop(struct bb_pcpu_freelist __bpfbox *s)
+{
+	struct bb_pcpu_freelist_head __bpfbox *head;
+	struct bb_pcpu_freelist_node __bpfbox *node;
+	int cpu;
+
+	for_each_cpu_wrap(cpu, cpu_possible_mask, raw_smp_processor_id()) {
+		head = unbox(*unbox(&s->freelist))[cpu];
+		if (!BB_READ_ONCE(head->first))
+			continue;
+		raw_spin_lock(unbox(&head->lock));
+		node = *unbox(&head->first);
+		if (node) {
+			BB_WRITE_ONCE(head->first, *unbox(&node->next));
+			raw_spin_unlock(unbox(&head->lock));
+			return node;
+		}
+		raw_spin_unlock(unbox(&head->lock));
+	}
+
+	/* per cpu lists are all empty, try extralist */
+	if (!BB_READ_ONCE(s->extralist.first))
+		return NULL;
+	BUG();
+	return NULL;
+}
+
+static struct bb_pcpu_freelist_node __bpfbox *__bb_pcpu_freelist_pop(struct bb_pcpu_freelist __bpfbox *s)
+{
+	if (in_nmi())
+		BUG();
+		/* return ___pcpu_freelist_pop_nmi(s); */
+	return ___bb_pcpu_freelist_pop(s);
+}
+
 void __bpfbox *__percpu_array_map_lookup_elem(struct bpf_map_inner __bpfbox *inner,
 					    void __bpfbox *key)
 {
@@ -371,12 +407,12 @@ static struct htab_elem __bpfbox *alloc_htab_elem(struct bpf_htab *htab, void __
 				BUG();
 			*pl_new = old_elem;
 		} else {
-			struct pcpu_freelist_node *l;
+			struct bb_pcpu_freelist_node __bpfbox *l;
 
-			l = __pcpu_freelist_pop(&htab->freelist);
+			l = __bb_pcpu_freelist_pop(&inner->freelist);
 			if (!l)
 				return (void __bpfbox *) ERR_PTR(-E2BIG);
-			l_new = box(container_of(l, struct htab_elem, fnode));
+			l_new = box_container_of(l, struct htab_elem, fnode);
 		}
 	} else {
 		BUG();
@@ -409,9 +445,9 @@ static struct htab_elem __bpfbox *alloc_htab_elem(struct bpf_htab *htab, void __
 
 static void free_htab_elem(struct bpf_htab *htab, struct htab_elem *l)
 {
-
+	BUG();
 	if (htab_is_prealloc(box(htab_inner(htab)))) {
-		__pcpu_freelist_push(&htab->freelist, &l->fnode);
+		/* __pcpu_freelist_push(&htab_inner(htab)->freelist, &l->fnode); */
 	} else {
 		BUG();
 	}

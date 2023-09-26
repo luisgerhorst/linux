@@ -57,6 +57,129 @@ static inline void bb_hlist_nulls_del_rcu(struct bb_hlist_nulls_node __bpfbox *n
 	BB_WRITE_ONCE(n->pprev, LIST_POISON2);
 }
 
+static int bb_pcpu_freelist_init(struct bb_pcpu_freelist *s)
+{
+	int cpu;
+	void __bpfbox **tmp;
+
+	tmp = bpfbox_alloc_pcpu(sizeof(struct bb_pcpu_freelist_head));
+	if (!tmp)
+		return -ENOMEM;
+	s->freelist = (struct bb_pcpu_freelist_head __bpfbox **) tmp;
+
+	for_each_possible_cpu(cpu) {
+		struct bb_pcpu_freelist_head __bpfbox *head = tmp[cpu];
+
+		raw_spin_lock_init(unbox(&head->lock));
+		*unbox(&head->first) = NULL;
+	}
+	raw_spin_lock_init(&s->extralist.lock);
+	s->extralist.first = NULL;
+	return 0;
+}
+
+static void bb_pcpu_freelist_destroy(struct bb_pcpu_freelist *s)
+{
+	bpfbox_free_pcpu(unbox(s->freelist));
+}
+
+
+static inline void bb_pcpu_freelist_push_node(struct bb_pcpu_freelist_head __bpfbox *head,
+					   struct bb_pcpu_freelist_node *node)
+{
+	node->next = *unbox(&head->first);
+	BB_WRITE_ONCE(head->first, box(node));
+}
+
+static inline void ___bb_pcpu_freelist_push(struct bb_pcpu_freelist_head __bpfbox *head,
+					 struct bb_pcpu_freelist_node *node)
+{
+	raw_spin_lock(&head->lock);
+	bb_pcpu_freelist_push_node(head, node);
+	raw_spin_unlock(&head->lock);
+}
+
+static void __bb_pcpu_freelist_push(struct bb_pcpu_freelist *s,
+			struct bb_pcpu_freelist_node *node)
+{
+	if (in_nmi()) {
+		BUG();
+	} else {
+		int cpu = raw_smp_processor_id();
+		struct bb_pcpu_freelist_head __bpfbox *head;
+		head = s->freelist[cpu];
+		___bb_pcpu_freelist_push(head, node);
+	}
+}
+
+static void bb_pcpu_freelist_populate(struct bb_pcpu_freelist *s, void *buf, u32 elem_size,
+			    u32 nr_elems)
+{
+	struct bb_pcpu_freelist_head __bpfbox *head;
+	unsigned int cpu, cpu_idx, i, j, n, m;
+
+	n = nr_elems / num_possible_cpus();
+	m = nr_elems % num_possible_cpus();
+
+	cpu_idx = 0;
+	for_each_possible_cpu(cpu) {
+		head = unbox(s->freelist)[cpu];
+		j = n + (cpu_idx < m ? 1 : 0);
+		for (i = 0; i < j; i++) {
+			/* No locking required as this is not visible yet. */
+			bb_pcpu_freelist_push_node(head, buf);
+			buf += elem_size;
+		}
+		cpu_idx++;
+	}
+}
+
+static struct bb_pcpu_freelist_node __bpfbox *___bb_pcpu_freelist_pop(struct bb_pcpu_freelist __bpfbox *s)
+{
+	struct bb_pcpu_freelist_head __bpfbox *head;
+	struct bb_pcpu_freelist_node __bpfbox *node;
+	int cpu;
+
+	for_each_cpu_wrap(cpu, cpu_possible_mask, raw_smp_processor_id()) {
+		head = unbox(s->freelist)[cpu];
+		if (!BB_READ_ONCE(head->first))
+			continue;
+		raw_spin_lock(unbox(&head->lock));
+		node = *unbox(&head->first);
+		if (node) {
+			BB_WRITE_ONCE(head->first, *unbox(&node->next));
+			raw_spin_unlock(unbox(&head->lock));
+			return node;
+		}
+		raw_spin_unlock(unbox(&head->lock));
+	}
+
+	/* per cpu lists are all empty, try extralist */
+	if (!BB_READ_ONCE(s->extralist.first))
+		return NULL;
+	BUG();
+	return NULL;
+}
+
+static struct bb_pcpu_freelist_node __bpfbox *__bb_pcpu_freelist_pop(struct bb_pcpu_freelist __bpfbox *s)
+{
+	if (in_nmi())
+		BUG();
+		/* return ___pcpu_freelist_pop_nmi(s); */
+	return ___bb_pcpu_freelist_pop(s);
+}
+
+static struct bb_pcpu_freelist_node __bpfbox *bb_pcpu_freelist_pop(struct bb_pcpu_freelist *s)
+{
+	struct bb_pcpu_freelist_node __bpfbox *ret;
+	unsigned long flags;
+
+	local_irq_save(flags);
+	ret = __bb_pcpu_freelist_pop(s);
+	local_irq_restore(flags);
+	return ret;
+}
+
 static inline bool htab_is_prealloc(const struct bpf_htab *htab)
 {
 	return !(htab->map.map_flags & BPF_F_NO_PREALLOC);
@@ -288,7 +411,7 @@ skip_percpu_elems:
 				   htab_lru_map_delete_node,
 				   htab);
 	else
-		err = pcpu_freelist_init(&htab->freelist);
+		err = bb_pcpu_freelist_init(&htab_inner(htab)->freelist);
 
 	if (err)
 		goto free_elems;
@@ -298,7 +421,7 @@ skip_percpu_elems:
 				 offsetof(struct htab_elem, lru_node),
 				 htab->elem_size, num_entries);
 	else
-		pcpu_freelist_populate(&htab->freelist,
+		bb_pcpu_freelist_populate(&htab_inner(htab)->freelist,
 				       htab->elems + offsetof(struct htab_elem, fnode),
 				       htab->elem_size, num_entries);
 
@@ -316,13 +439,13 @@ static void prealloc_destroy(struct bpf_htab *htab)
 	if (htab_is_lru(htab))
 		bpf_lru_destroy(&htab->lru);
 	else
-		pcpu_freelist_destroy(&htab->freelist);
+		bb_pcpu_freelist_destroy(&htab_inner(htab)->freelist);
 }
 
 static int alloc_extra_elems(struct bpf_htab *htab)
 {
 	struct htab_elem __bpfbox **pptr, *l_new;
-	struct pcpu_freelist_node *l;
+	struct bb_pcpu_freelist_node __bpfbox *l;
 	int cpu;
 
 	/* pptr = bpf_map_alloc_percpu(&htab->map, sizeof(struct htab_elem *), 8, */
@@ -332,12 +455,12 @@ static int alloc_extra_elems(struct bpf_htab *htab)
 		return -ENOMEM;
 
 	for_each_possible_cpu(cpu) {
-		l = pcpu_freelist_pop(&htab->freelist);
+		l = bb_pcpu_freelist_pop(&htab_inner(htab)->freelist);
 		/* pop will succeed, since prealloc_init()
 		 * preallocated extra num_possible_cpus elements
 		 */
-		l_new = container_of(l, struct htab_elem, fnode);
-		pptr[cpu] = box(l_new);
+		l_new = box_container_of(l, struct htab_elem, fnode);
+		pptr[cpu] = l_new;
 	}
 	htab->extra_elems = pptr;
 	htab_inner(htab)->extra_elems = box(pptr);
@@ -794,10 +917,12 @@ static int htab_map_get_next_key(struct bpf_map *map, void *key, void *next_key)
 	if (!l)
 		goto find_first_elem;
 
+	BUG();
 	/* key was found, get next key in the same bucket */
-	next_l = bb_hlist_nulls_entry_safe((struct bb_hlist_nulls_node*)unbox(&l->hash_node.next),
-				  struct htab_elem, hash_node);
+	/* next_l = bb_hlist_nulls_entry_safe((struct bb_hlist_nulls_node*)unbox(&l->hash_node.next), */
+	/* 			  struct htab_elem, hash_node); */
 
+	next_l = NULL;
 	if (next_l) {
 		/* if next elem in this hash list is non-zero, just return it */
 		memcpy(next_key, next_l->key, key_size);
@@ -876,8 +1001,9 @@ static void free_htab_elem(struct bpf_htab *htab, struct htab_elem *l)
 	htab_put_fd_value(htab, l);
 
 	if (htab_is_prealloc(htab)) {
+		l = unbox(l);
 		check_and_free_fields(htab, l);
-		__pcpu_freelist_push(&htab->freelist, &l->fnode);
+		__bb_pcpu_freelist_push(&htab_inner(htab)->freelist, &l->fnode);
 	} else {
 		dec_elem_count(htab);
 		htab_elem_free(htab, l);
@@ -954,12 +1080,12 @@ static struct htab_elem *alloc_htab_elem(struct bpf_htab *htab, void *key,
 			htab_put_fd_value(htab, old_elem);
 			*pl_new = box(old_elem);
 		} else {
-			struct pcpu_freelist_node *l;
+			struct bb_pcpu_freelist_node __bpfbox *l;
 
-			l = __pcpu_freelist_pop(&htab->freelist);
+			l = __bb_pcpu_freelist_pop(&htab_inner(htab)->freelist);
 			if (!l)
 				return ERR_PTR(-E2BIG);
-			l_new = container_of(l, struct htab_elem, fnode);
+			l_new = unbox(box_container_of(l, struct htab_elem, fnode));
 		}
 	} else {
 		BUG();
@@ -1119,9 +1245,9 @@ static int htab_map_update_elem(struct bpf_map *map, void *key, void *value,
 	/* add new element to the head of the list, so that
 	 * concurrent search will find it before old elem
 	 */
-	bb_hlist_nulls_add_head_rcu(&l_new->hash_node, head);
+	bb_hlist_nulls_add_head_rcu(box(&l_new->hash_node), box(head));
 	if (l_old) {
-		bb_hlist_nulls_del_rcu(&l_old->hash_node);
+		bb_hlist_nulls_del_rcu(box(&l_old->hash_node));
 		if (!htab_is_prealloc(htab))
 			free_htab_elem(htab, l_old);
 		else

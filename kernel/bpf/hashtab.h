@@ -8,9 +8,10 @@
 /* #include <linux/rculist_nulls.h> */
 #include <linux/rcupdate.h>
 #include <linux/bpf_mem_alloc.h>
-#include "percpu_freelist.h"
+/* #include "percpu_freelist.h" */
 #include "bpf_lru_list.h"
 
+#include <linux/spinlock.h>
 #include <linux/poison.h>
 #include <linux/const.h>
 
@@ -28,7 +29,7 @@ struct bb_hlist_nulls_node {
 
 #define __BB_WRITE_ONCE(x, val)						\
 do {									\
-	*(unbox((volatile typeof(x) *)&(x))) = (val);			\
+	*(unbox((volatile typeof(x) __bpfbox *)&(x))) = (val);		\
 } while (0)
 
 #define BB_WRITE_ONCE(x, val)						\
@@ -39,7 +40,7 @@ do {									\
 
 #define BB_READ_ONCE(x)						\
 ({								\
-	(*unbox((const volatile typeof(x) *)&(x)));		\
+	(*unbox((const volatile typeof(x) __bpfbox *)&(x)));	\
 })
 
 #define bb_rcu_assign_pointer(p, v)	\
@@ -98,6 +99,32 @@ static inline unsigned long bb_get_nulls_value(const struct bb_hlist_nulls_node 
 	(!bb_is_a_nulls(pos)) &&					\
 		({ tpos = bb_hlist_nulls_entry(pos, typeof(*tpos), member); 1;}); \
 	     pos = *unbox(&pos->next))
+
+struct bb_pcpu_freelist_head {
+	struct bb_pcpu_freelist_node __bpfbox *first;
+	raw_spinlock_t lock;
+};
+
+struct bb_pcpu_freelist {
+	struct bb_pcpu_freelist_head __bpfbox **freelist;
+	struct bb_pcpu_freelist_head extralist;
+};
+
+struct bb_pcpu_freelist_node {
+	struct bb_pcpu_freelist_node __bpfbox *next;
+};
+
+/* pcpu_freelist_* do spin_lock_irqsave. */
+/* void bb_pcpu_freelist_push(struct bb_pcpu_freelist *, struct bb_pcpu_freelist_node *); */
+/* struct bb_pcpu_freelist_node *bb_pcpu_freelist_pop(struct bb_pcpu_freelist *); */
+/* __pcpu_freelist_* do spin_lock only. caller must disable irqs. */
+/* void __bb_pcpu_freelist_push(struct bb_pcpu_freelist *, struct bb_pcpu_freelist_node *); */
+/* struct bb_pcpu_freelist_node __bpfbox *__bb_pcpu_freelist_pop(struct bb_pcpu_freelist *); */
+/* void bb_pcpu_freelist_populate(struct bb_pcpu_freelist *s, void *buf, u32 elem_size, */
+/* 			    u32 nr_elems); */
+/* int bb_pcpu_freelist_init(struct bb_pcpu_freelist __bpfbox *); */
+/* void bb_pcpu_freelist_destroy(struct bb_pcpu_freelist *s); */
+
 /*
  * The bucket lock has two protection scopes:
  *
@@ -156,6 +183,7 @@ struct bpf_htab_inner {
 	struct bpf_htab *htab;
 	struct bucket __bpfbox *buckets;
 	struct htab_elem __bpfbox *__bpfbox *extra_elems;
+	struct bb_pcpu_freelist freelist;
 	u32 hashrnd;
 	u32 n_buckets;
 	local_t __bpfbox * __bpfbox *map_locked;
@@ -166,10 +194,9 @@ struct bpf_htab {
 	struct bpf_mem_alloc ma;
 	struct bpf_mem_alloc pcpu_ma;
 	struct bucket *buckets;
-	struct htab_elem *__bpfbox *extra_elems;
+	struct htab_elem __bpfbox **extra_elems;
 	void *elems;
 	union {
-		struct pcpu_freelist freelist;
 		struct bpf_lru lru;
 	};
 	/* number of elements in non-preallocated hashtable are kept
@@ -192,7 +219,7 @@ struct htab_elem {
 		struct {
 			void *padding;
 			union {
-				struct pcpu_freelist_node fnode;
+				struct bb_pcpu_freelist_node fnode;
 				struct htab_elem *batch_flink;
 			};
 		};
