@@ -9,7 +9,7 @@
 #include <linux/rcupdate.h>
 #include <linux/bpf_mem_alloc.h>
 /* #include "percpu_freelist.h" */
-#include "bpf_lru_list.h"
+#include "bb_bpf_lru_list.h"
 
 #include <linux/spinlock.h>
 #include <linux/poison.h>
@@ -26,22 +26,6 @@ struct bb_hlist_nulls_node {
 	struct bb_hlist_nulls_node __bpfbox *next;
 	struct bb_hlist_nulls_node __bpfbox * __bpfbox *pprev;
 };
-
-#define __BB_WRITE_ONCE(x, val)						\
-do {									\
-	*(unbox((volatile typeof(x) __bpfbox *)&(x))) = (val);		\
-} while (0)
-
-#define BB_WRITE_ONCE(x, val)						\
-do {									\
-	compiletime_assert_rwonce_type(x);				\
-	__BB_WRITE_ONCE((x), (val));					\
-} while (0)
-
-#define BB_READ_ONCE(x)						\
-({								\
-	(*unbox((const volatile typeof(x) __bpfbox *)&(x)));	\
-})
 
 #define bb_rcu_assign_pointer(p, v)	\
 do {					\
@@ -183,7 +167,10 @@ struct bpf_htab_inner {
 	struct bpf_htab *htab;
 	struct bucket __bpfbox *buckets;
 	struct htab_elem __bpfbox *__bpfbox *extra_elems;
-	struct bb_pcpu_freelist freelist;
+	union {
+		struct bb_bpf_lru lru;
+		struct bb_pcpu_freelist freelist;
+	};
 	u32 hashrnd;
 	u32 n_buckets;
 	local_t __bpfbox * __bpfbox *map_locked;
@@ -196,9 +183,6 @@ struct bpf_htab {
 	struct bucket *buckets;
 	struct htab_elem __bpfbox **extra_elems;
 	void *elems;
-	union {
-		struct bpf_lru lru;
-	};
 	/* number of elements in non-preallocated hashtable are kept
 	 * in either pcount or count
 	 */
@@ -227,7 +211,7 @@ struct htab_elem {
 	union {
 		/* pointer to per-cpu pointer */
 		void *ptr_to_pptr;
-		struct bpf_lru_node lru_node;
+		struct bb_bpf_lru_node lru_node;
 	};
 	u32 hash;
 	char key[] __aligned(8);

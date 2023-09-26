@@ -25,6 +25,22 @@ void bpfbox_free_pcpu(void *p);
 #define BPFBOX_CHECK_VALID(p)
 #endif
 
+#define __BB_WRITE_ONCE(x, val)						\
+do {									\
+	*(unbox((volatile typeof(x) __bpfbox *)&(x))) = (val);		\
+} while (0)
+
+#define BB_WRITE_ONCE(x, val)						\
+do {									\
+	compiletime_assert_rwonce_type(x);				\
+	__BB_WRITE_ONCE((x), (val));					\
+} while (0)
+
+#define BB_READ_ONCE(x)						\
+({								\
+	(*unbox((const volatile typeof(x) __bpfbox *)&(x)));	\
+})
+
 #define bpf_unbox_ptr(p) \
 ({			 \
 	BPFBOX_CHECK_VALID((p));				\
@@ -47,7 +63,7 @@ static inline void *fast_bpf_unbox_ptr(void __bpfbox *p)
 
 static inline void __bpfbox *bpf_box_ptr(void *ptr)
 {
-	void __bpfbox *p = (void __bpfbox *)(ptr - BPFBOX_START);
+	void __bpfbox *p = (void __bpfbox *)((unsigned long)(ptr - BPFBOX_START) & 0xffffffff);
 	BPFBOX_CHECK_VALID(p);
 	return p;
 }
