@@ -96,6 +96,7 @@ static bool __bpf_test_timer_continue(struct bpf_test_timer *t, int iterations,
 		/* During iteration: we need to reschedule between runs. */
 		cond_resched();
 	}
+
 	/* reset context */
 	if (xdp && ctx_use && ctx_orig && packet) {
 		struct xdp_buff *ctx = ctx_use;
@@ -108,8 +109,8 @@ static bool __bpf_test_timer_continue(struct bpf_test_timer *t, int iterations,
 		ctx->data_hard_start = packet;
 		memcpy(packet, xdp_ctx_orig->data_hard_start, size);
 	}
-	bpf_test_timer_enter(t);
 
+	bpf_test_timer_enter(t);
 	/* Do another round. */
 	return true;
 

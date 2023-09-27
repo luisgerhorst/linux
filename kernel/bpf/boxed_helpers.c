@@ -1,6 +1,8 @@
 #include <linux/kernel.h>
 #include <linux/bpf.h>
 #include <linux/bpfbox.h>
+#include <net/xdp.h>
+
 #include "hashtab.h"
 
 
@@ -9,6 +11,31 @@ register unsigned long base asm ("r12");
 #undef box
 
 #define unbox(p)	\
+({			\
+	register unsigned int masked_p = ((unsigned long)(p) & 0xffffffff);	\
+	register volatile typeof(*(p)) __kernel __force *a = (typeof(*(p)) __kernel __force *)(base + masked_p); \
+	a;\
+})
+
+/* #define unbox(p)	\ */
+/* ({			\ */
+/* 	BPFBOX_CHECK_VALID((p));	\ */
+/* 	(typeof(*(p)) __kernel __force *)(base + ((unsigned long)(p) & 0xffffffff)); \ */
+/* }) */
+
+
+
+/* #define unbox(p)	\ */
+/* ({			\ */
+/* unsigned int masked_p = ((unsigned long)(p) & 0xffffffff);\ */
+/* volatile typeof(*(p)) *unboxed_p;\ */
+/* asm ("mov %1, %1\n\t"   \ */
+/*      "lea (%2, %q1), %0" \ */
+/* 	: "=r" (unboxed_p), "+r" (masked_p) : "r" (base));	\ */
+/* 	unboxed_p;\ */
+/* }) */
+
+#define unsafe_unbox(p) \
 ({			\
 	BPFBOX_CHECK_VALID((p));	\
 	(typeof(*(p)) __kernel __force *)(base + ((unsigned long)(p) & 0xffffffff)); \
@@ -393,9 +420,9 @@ static void bpf_lru_list_push_free(struct bb_bpf_lru_list __bpfbox *l,
 	if (WARN_ON_ONCE(IS_LOCAL_LIST_TYPE(*unbox(&node->type))))
 		return;
 
-	raw_spin_lock_irqsave(unbox(&l->lock), flags);
+	raw_spin_lock_irqsave(unsafe_unbox(&l->lock), flags);
 	__bpf_lru_node_move(l, node, BPF_LRU_LIST_T_FREE);
-	raw_spin_unlock_irqrestore(unbox(&l->lock), flags);
+	raw_spin_unlock_irqrestore(unsafe_unbox(&l->lock), flags);
 }
 
 static void bpf_lru_list_pop_free_to_local(struct bb_bpf_lru __bpfbox *lru,
@@ -405,7 +432,7 @@ static void bpf_lru_list_pop_free_to_local(struct bb_bpf_lru __bpfbox *lru,
 	struct bb_bpf_lru_node __bpfbox *node, *tmp_node;
 	unsigned int nfree = 0;
 
-	raw_spin_lock(unbox(&l->lock));
+	raw_spin_lock(unsafe_unbox(&l->lock));
 
 	__local_list_flush(l, loc_l);
 
@@ -424,7 +451,7 @@ static void bpf_lru_list_pop_free_to_local(struct bb_bpf_lru __bpfbox *lru,
 				      local_free_list(loc_l),
 				      BPF_LRU_LOCAL_LIST_T_FREE);
 
-	raw_spin_unlock(unbox(&l->lock));
+	raw_spin_unlock(unsafe_unbox(&l->lock));
 }
 
 static void __local_list_add_pending(struct bb_bpf_lru __bpfbox *lru,
@@ -491,7 +518,7 @@ static struct bb_bpf_lru_node __bpfbox *bpf_common_lru_pop_free(struct bb_bpf_lr
 
 	loc_l = &(*unbox(&clru->local_list))[cpu];
 
-	raw_spin_lock_irqsave(unbox(&loc_l->lock), flags);
+	raw_spin_lock_irqsave(unsafe_unbox(&loc_l->lock), flags);
 
 	node = __local_list_pop_free(loc_l);
 	if (!node) {
@@ -502,7 +529,7 @@ static struct bb_bpf_lru_node __bpfbox *bpf_common_lru_pop_free(struct bb_bpf_lr
 	if (node)
 		__local_list_add_pending(lru, loc_l, cpu, node, hash);
 
-	raw_spin_unlock_irqrestore(unbox(&loc_l->lock), flags);
+	raw_spin_unlock_irqrestore(unsafe_unbox(&loc_l->lock), flags);
 
 	if (node)
 		return node;
@@ -520,13 +547,13 @@ static struct bb_bpf_lru_node __bpfbox *bpf_common_lru_pop_free(struct bb_bpf_lr
 	do {
 		steal_loc_l = &(*unbox(&clru->local_list))[steal];
 
-		raw_spin_lock_irqsave(unbox(&steal_loc_l->lock), flags);
+		raw_spin_lock_irqsave(unsafe_unbox(&steal_loc_l->lock), flags);
 
 		node = __local_list_pop_free(steal_loc_l);
 		if (!node)
 			node = __local_list_pop_pending(lru, steal_loc_l);
 
-		raw_spin_unlock_irqrestore(unbox(&steal_loc_l->lock), flags);
+		raw_spin_unlock_irqrestore(unsafe_unbox(&steal_loc_l->lock), flags);
 
 		steal = get_next_cpu(steal);
 	} while (!node && steal != first_steal);
@@ -534,9 +561,9 @@ static struct bb_bpf_lru_node __bpfbox *bpf_common_lru_pop_free(struct bb_bpf_lr
 	*unbox(&loc_l->next_steal) = steal;
 
 	if (node) {
-		raw_spin_lock_irqsave(unbox(&loc_l->lock), flags);
+		raw_spin_lock_irqsave(unsafe_unbox(&loc_l->lock), flags);
 		__local_list_add_pending(lru, loc_l, cpu, node, hash);
-		raw_spin_unlock_irqrestore(unbox(&loc_l->lock), flags);
+		raw_spin_unlock_irqrestore(unsafe_unbox(&loc_l->lock), flags);
 	}
 
 	return node;
@@ -565,10 +592,10 @@ static void bpf_common_lru_push_free(struct bb_bpf_lru __bpfbox *lru,
 
 		loc_l = &(*unbox(&lru->common_lru.local_list))[*unbox(&node->cpu)];
 
-		raw_spin_lock_irqsave(unbox(&loc_l->lock), flags);
+		raw_spin_lock_irqsave(unsafe_unbox(&loc_l->lock), flags);
 
 		if (unlikely(*unbox(&node->type) != BPF_LRU_LOCAL_LIST_T_PENDING)) {
-			raw_spin_unlock_irqrestore(unbox(&loc_l->lock), flags);
+			raw_spin_unlock_irqrestore(unsafe_unbox(&loc_l->lock), flags);
 			goto check_lru_list;
 		}
 
@@ -576,7 +603,7 @@ static void bpf_common_lru_push_free(struct bb_bpf_lru __bpfbox *lru,
 		*unbox(&node->ref) = 0;
 		bb_list_move(&node->list, local_free_list(loc_l));
 
-		raw_spin_unlock_irqrestore(unbox(&loc_l->lock), flags);
+		raw_spin_unlock_irqrestore(unsafe_unbox(&loc_l->lock), flags);
 		return;
 	}
 
@@ -631,14 +658,14 @@ static struct bb_pcpu_freelist_node __bpfbox *___bb_pcpu_freelist_pop(struct bb_
 		head = unbox(*unbox(&s->freelist))[cpu];
 		if (!BB_READ_ONCE(head->first))
 			continue;
-		raw_spin_lock(unbox(&head->lock));
+		raw_spin_lock(unsafe_unbox(&head->lock));
 		node = *unbox(&head->first);
 		if (node) {
 			BB_WRITE_ONCE(head->first, *unbox(&node->next));
-			raw_spin_unlock(unbox(&head->lock));
+			raw_spin_unlock(unsafe_unbox(&head->lock));
 			return node;
 		}
-		raw_spin_unlock(unbox(&head->lock));
+		raw_spin_unlock(unsafe_unbox(&head->lock));
 	}
 
 	/* per cpu lists are all empty, try extralist */
@@ -732,7 +759,7 @@ static inline u32 bpfbox_jhash(const void __bpfbox *key, u32 length, u32 initval
 
 	/* return c; */
 	u32 a, b, c;
-	const u8 *k = unbox(key);
+	register const u8 *k = unsafe_unbox(key);
 
 	/* Set up the internal state */
 	a = b = c = JHASH_INITVAL + length + initval;
@@ -774,15 +801,15 @@ static inline u32 htab_map_hash(const void __bpfbox *key, u32 key_len, u32 hashr
 	return bpfbox_jhash(key, key_len, hashrnd);
 }
 
-static inline struct bucket __bpfbox *__select_bucket(struct bpf_htab_inner __bpfbox *htab, u32 hash)
+static inline struct bucket __bpfbox *__select_bucket(struct bpf_htab_inner __bpfbox *inner, u32 hash)
 {
-	struct bucket __bpfbox *bucket = *unbox(&htab->buckets);
-	return &bucket[hash & (*unbox(&htab->n_buckets) - 1)];
+	struct bucket __bpfbox *bucket = *unbox(&inner->buckets);
+	return &bucket[hash & (*unbox(&inner->n_buckets) - 1)];
 }
 
-static inline struct bb_hlist_nulls_head __bpfbox *select_bucket(struct bpf_htab_inner __bpfbox *htab, u32 hash)
+static inline struct bb_hlist_nulls_head __bpfbox *select_bucket(struct bpf_htab_inner __bpfbox *inner, u32 hash)
 {
-	return &__select_bucket(htab, hash)->head;
+	return &__select_bucket(inner, hash)->head;
 }
 
 static inline int bpf_box_memcmp(const char __bpfbox *s, const char __bpfbox *d, int len)
@@ -824,7 +851,7 @@ again:
 	/* 		return l; */
 
 	bb_hlist_nulls_for_each_entry_rcu(l, n, head, hash_node)
-		if (*unbox(&l->hash) == hash && !memcmp(unbox(&l->key[0]), unbox(key), key_size))
+		if (*unbox(&l->hash) == hash && !memcmp(unsafe_unbox(&l->key[0]), unsafe_unbox(key), key_size))
 			return l;
 
 	if (unlikely(bb_get_nulls_value(n) != (hash & (n_buckets - 1))))
@@ -862,7 +889,7 @@ static int htab_lock_bucket(const struct bpf_htab_inner __bpfbox *inner,
 	unsigned long flags;
 	int cpu;
 	long lock_v;
-	local_t *lock;
+	register local_t *lock;
 
 	hash = hash & min_t(u32, HASHTAB_MAP_LOCK_MASK, *unbox(&inner->n_buckets) - 1);
 
@@ -871,7 +898,7 @@ static int htab_lock_bucket(const struct bpf_htab_inner __bpfbox *inner,
 
 	/* lockp = unbox(inner->map_locked + cpu); */
 	/* lock = unbox(lockp[hash]); */
-	lock = unbox(&(*unbox(&(*unbox(&inner->map_locked))[cpu]))[hash]);
+	lock = unsafe_unbox(&(*unbox(&(*unbox(&inner->map_locked))[cpu]))[hash]);
 	lock_v = local_add_return(1, lock);
 	if (unlikely(lock_v != 1)) {
 		local_sub(1, lock);
@@ -879,7 +906,7 @@ static int htab_lock_bucket(const struct bpf_htab_inner __bpfbox *inner,
 		return -EBUSY;
 	}
 
-	raw_spin_lock_irqsave(unbox(&b->raw_lock), flags);
+	raw_spin_lock_irqsave(unsafe_unbox(&b->raw_lock), flags);
 	*pflags = flags;
 
 	return 0;
@@ -889,12 +916,12 @@ static void htab_unlock_bucket(const struct bpf_htab_inner __bpfbox *inner,
 				      struct bucket __bpfbox *b, u32 hash,
 				      unsigned long flags)
 {
-	local_t *lock;
+	register local_t *lock;
 	int cpu;
 	hash = hash & min_t(u32, HASHTAB_MAP_LOCK_MASK, *unbox(&inner->n_buckets) - 1);
 	cpu = raw_smp_processor_id();
-	raw_spin_unlock_irqrestore(unbox(&b->raw_lock), flags);
-	lock = unbox(&(*unbox(&(*unbox(&inner->map_locked))[cpu]))[hash]);
+	raw_spin_unlock_irqrestore(unsafe_unbox(&b->raw_lock), flags);
+	lock = unsafe_unbox(&(*unbox(&(*unbox(&inner->map_locked))[cpu]))[hash]);
 	local_sub(1, lock);
 	preempt_enable();
 }
@@ -909,7 +936,7 @@ static struct htab_elem __bpfbox *lookup_elem_raw(struct bb_hlist_nulls_head __b
 	/* 	if (*unbox(&l->hash) == hash && !bpf_box_memcmp(&l->key[0], key, key_size)) */
 	/* 		return l; */
 	bb_hlist_nulls_for_each_entry_rcu(l, n, head, hash_node)
-		if (*unbox(&l->hash) == hash && !memcmp(unbox(&l->key[0]), unbox(key), key_size))
+		if (*unbox(&l->hash) == hash && !memcmp(unsafe_unbox(&l->key[0]), unsafe_unbox(key), key_size))
 			return l;
 
 	return NULL;
@@ -948,7 +975,7 @@ static struct htab_elem __bpfbox *alloc_htab_elem(struct bpf_htab_inner __bpfbox
 {
 	bool prealloc = htab_is_prealloc(inner);
 	struct htab_elem __bpfbox *l_new;
-	struct htab_elem __bpfbox **pl_new;
+	register struct htab_elem __bpfbox **pl_new;
 
 	if (prealloc) {
 		if (old_elem) {
@@ -956,7 +983,7 @@ static struct htab_elem __bpfbox *alloc_htab_elem(struct bpf_htab_inner __bpfbox
 			 * use per-cpu extra elems to avoid freelist_pop/push
 			 */
 			int cpu = raw_smp_processor_id();
-			pl_new = unbox(*unbox(&inner->extra_elems) + cpu);
+			pl_new = unsafe_unbox(*unbox(&inner->extra_elems) + cpu);
 			l_new = *pl_new;
 			if (*unbox(&inner->map_inner.map_type) == BPF_MAP_TYPE_HASH_OF_MAPS)
 				BUG();
@@ -974,7 +1001,7 @@ static struct htab_elem __bpfbox *alloc_htab_elem(struct bpf_htab_inner __bpfbox
 	}
 
 	/* bpf_box_memcpy(l_new->key, key, key_size); */
-	memcpy(unbox(&l_new->key[0]), unbox(key), key_size);
+	memcpy(unsafe_unbox(&l_new->key[0]), unsafe_unbox(key), key_size);
 	if (percpu) {
 		BUG();
 	} else if (fd_htab_map_needs_adjust(inner)) {
@@ -983,7 +1010,7 @@ static struct htab_elem __bpfbox *alloc_htab_elem(struct bpf_htab_inner __bpfbox
 		if (*unbox(&inner->map_inner.map_flags) != 0) {
 			BUG();
 		} else {
-			memcpy(unbox(&(l_new->key[0]) + round_up(key_size, 8)), unbox(value),
+			memcpy(unsafe_unbox(&(l_new->key[0]) + round_up(key_size, 8)), unsafe_unbox(value),
 			       *unbox(&inner->map_inner.value_size));
 			/* bpf_box_memcpy(&l_new->key[0] + round_up(key_size, 8), value, */
 			/* 	       *unbox(&inner->map_inner.value_size)); */
@@ -1096,7 +1123,7 @@ static struct htab_elem __bpfbox *prealloc_lru_pop(struct bpf_htab_inner __bpfbo
 
 	if (node) {
 		l = box_container_of(node, struct htab_elem, lru_node);
-		memcpy(unbox(l->key), unbox(key), *unbox(&inner->map_inner.key_size));
+		memcpy(unsafe_unbox(l->key), unsafe_unbox(key), *unbox(&inner->map_inner.key_size));
 		return l;
 	}
 
@@ -1149,7 +1176,7 @@ int __htab_lru_map_update_elem(struct bpf_map_inner __bpfbox *map_inner,
 	if (*unbox(&inner->map_inner.map_flags) != 0) {
 		BUG();
 	} else {
-		memcpy(unbox(&(l_new->key[0]) + round_up(key_size, 8)), unbox(value),
+		memcpy(unsafe_unbox(&(l_new->key[0]) + round_up(key_size, 8)), unsafe_unbox(value),
 			*unbox(&inner->map_inner.value_size));
 	}
 
@@ -1185,3 +1212,30 @@ err:
 	return ret;
 }
 
+int bpfbox_xdp_adjust_head(struct bpfbox_xdp_buff __bpfbox *xdp, int offset)
+{
+	void __bpfbox *xdp_frame_end = *unbox(&xdp->data_hard_start) + sizeof(struct xdp_frame);
+	void __bpfbox *data = *unbox(&xdp->data);
+	void __bpfbox *data_meta = *unbox(&xdp->data_meta);
+	unsigned long metalen = (unlikely(data_meta > data)) ? 0 : data - data_meta;
+	void __bpfbox *data_start = xdp_frame_end + metalen;
+	void __bpfbox *new_data = *unbox(&xdp->data) + offset;
+	void __bpfbox *clear_start = metalen ? *unbox(&xdp->data_meta) + offset : data + offset;
+
+
+	if (unlikely(new_data < data_start ||
+		     new_data > *unbox(&xdp->data_end) - ETH_HLEN))
+		return -EINVAL;
+
+	memset(unsafe_unbox(clear_start), 0, -offset);
+	if (metalen) {
+		void __bpfbox *data_meta = *unbox(&xdp->data_meta);
+		memmove(unsafe_unbox(data_meta + offset),
+			unsafe_unbox(data_meta), metalen);
+	}
+
+	*unbox(&xdp->data_meta) += offset;
+	*unbox(&xdp->data) = data;
+
+	return 0;
+}

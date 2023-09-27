@@ -902,6 +902,7 @@ jmp_rest:
 		case BPF_ST:
 		case BPF_STX:
 			stack_off = fp->k * 4  + 4;
+			*insn++ = BPF_ST_BOXMEM();
 			*insn = BPF_STX_MEM(BPF_W, BPF_REG_FP, BPF_CLASS(fp->code) ==
 					    BPF_ST ? BPF_REG_A : BPF_REG_X,
 					    -stack_off);
@@ -917,6 +918,7 @@ jmp_rest:
 		case BPF_LD | BPF_MEM:
 		case BPF_LDX | BPF_MEM:
 			stack_off = fp->k * 4  + 4;
+			*insn++ = BPF_ST_BOXMEM();
 			*insn = BPF_LDX_MEM(BPF_W, BPF_CLASS(fp->code) == BPF_LD  ?
 					    BPF_REG_A : BPF_REG_X, BPF_REG_FP,
 					    -stack_off);
@@ -942,6 +944,7 @@ jmp_rest:
 		/* A = skb->len or X = skb->len */
 		case BPF_LD | BPF_W | BPF_LEN:
 		case BPF_LDX | BPF_W | BPF_LEN:
+			*insn++ = BPF_ST_BOXMEM();
 			*insn = BPF_LDX_MEM(BPF_W, BPF_CLASS(fp->code) == BPF_LD ?
 					    BPF_REG_A : BPF_REG_X, BPF_REG_CTX,
 					    offsetof(struct sk_buff, len));
@@ -950,6 +953,7 @@ jmp_rest:
 		/* Access seccomp_data fields. */
 		case BPF_LDX | BPF_ABS | BPF_W:
 			/* A = *(u32 *) (ctx + K) */
+			*insn++ = BPF_ST_BOXMEM();
 			*insn = BPF_LDX_MEM(BPF_W, BPF_REG_A, BPF_REG_CTX, fp->k);
 			break;
 
@@ -3912,36 +3916,36 @@ const struct bpf_func_proto bpf_xdp_get_buff_len_trace_proto = {
 	.arg1_btf_id	= &bpf_xdp_get_buff_len_bpf_ids[0],
 };
 
-static unsigned long xdp_get_metalen(const struct bpfbox_xdp_buff *xdp)
+static unsigned long xdp_get_metalen(const struct xdp_buff *xdp)
 {
-	return bpfbox_xdp_data_meta_unsupported(xdp) ? 0 :
+	return xdp_data_meta_unsupported(xdp) ? 0 :
 	       xdp->data - xdp->data_meta;
 }
 
-BPF_CALL_2(bpf_xdp_adjust_head, struct bpfbox_xdp_buff __bpfbox *, _xdp, int, offset)
+BPF_CALL_2(bpf_xdp_adjust_head, struct xdp_buff *, xdp, int, offset)
 {
-	struct bpfbox_xdp_buff *xdp = bpf_unbox_ptr(_xdp);
-	void __bpfbox *xdp_frame_end = xdp->data_hard_start + sizeof(struct xdp_frame);
+	void *xdp_frame_end = xdp->data_hard_start + sizeof(struct xdp_frame);
 	unsigned long metalen = xdp_get_metalen(xdp);
-	void __bpfbox *data_start = xdp_frame_end + metalen;
-	void __bpfbox  *data = xdp->data + offset;
+	void *data_start = xdp_frame_end + metalen;
+	void *data = xdp->data + offset;
 
 	if (unlikely(data < data_start ||
 		     data > xdp->data_end - ETH_HLEN))
 		return -EINVAL;
 
 	if (metalen)
-		memmove(bpf_unbox_ptr(xdp->data_meta + offset),
-			bpf_unbox_ptr(xdp->data_meta), metalen);
-
+		memmove(xdp->data_meta + offset,
+			xdp->data_meta, metalen);
 	xdp->data_meta += offset;
 	xdp->data = data;
 
 	return 0;
 }
 
+int bpfbox_xdp_adjust_head(struct bpfbox_xdp_buff __bpfbox *xdp, int offset);
+
 static const struct bpf_func_proto bpf_xdp_adjust_head_proto = {
-	.func		= bpf_xdp_adjust_head,
+	.func		= (u64 (*)(u64,  u64,  u64,  u64,  u64))(void*) bpfbox_xdp_adjust_head,
 	.gpl_only	= false,
 	.ret_type	= RET_INTEGER,
 	.arg1_type	= ARG_PTR_TO_CTX,
@@ -7690,7 +7694,7 @@ bool bpf_helper_changes_pkt_data(void *func)
 	    func == bpf_clone_redirect ||
 	    func == bpf_l3_csum_replace ||
 	    func == bpf_l4_csum_replace ||
-	    func == bpf_xdp_adjust_head ||
+	    func == bpfbox_xdp_adjust_head ||
 	    func == bpf_xdp_adjust_meta ||
 	    func == bpf_msg_pull_data ||
 	    func == bpf_msg_push_data ||

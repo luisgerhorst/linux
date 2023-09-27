@@ -39,6 +39,7 @@
 #ifdef CONFIG_SECCOMP_FILTER
 #include <linux/file.h>
 #include <linux/filter.h>
+#include <linux/bpfbox.h>
 #include <linux/pid.h>
 #include <linux/ptrace.h>
 #include <linux/capability.h>
@@ -1194,7 +1195,8 @@ static int __seccomp_filter(int this_syscall, const struct seccomp_data *sd,
 	u32 filter_ret, action;
 	struct seccomp_filter *match = NULL;
 	int data;
-	struct seccomp_data sd_local;
+	struct seccomp_data *sd_local;
+	bool stack_opened = false;
 
 	/*
 	 * Make sure that any changes to mode from another thread have
@@ -1202,12 +1204,18 @@ static int __seccomp_filter(int this_syscall, const struct seccomp_data *sd,
 	 */
 	smp_rmb();
 
+	preempt_disable();
 	if (!sd) {
-		populate_seccomp_data(&sd_local);
-		sd = &sd_local;
+		stack_opened = true;
+		sd_local = BPFBOX_START + open_bpf_scratch(sizeof(struct seccomp_data));
+		populate_seccomp_data(sd_local);
+		sd = sd_local;
 	}
 
 	filter_ret = seccomp_run_filters(sd, &match);
+	if (stack_opened)
+		close_bpf_scratch(sizeof(struct seccomp_data));
+	preempt_enable();
 	data = filter_ret & SECCOMP_RET_DATA;
 	action = filter_ret & SECCOMP_RET_ACTION_FULL;
 

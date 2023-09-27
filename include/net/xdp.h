@@ -404,12 +404,6 @@ xdp_data_meta_unsupported(const struct xdp_buff *xdp)
 	return unlikely(xdp->data_meta > xdp->data);
 }
 
-static __always_inline bool
-bpfbox_xdp_data_meta_unsupported(const struct bpfbox_xdp_buff *xdp)
-{
-	return unlikely(xdp->data_meta > xdp->data);
-}
-
 static inline bool xdp_metalen_invalid(unsigned long metalen)
 {
 	return (metalen & (sizeof(__u32) - 1)) || (metalen > 32);
