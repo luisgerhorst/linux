@@ -1214,13 +1214,13 @@ err:
 
 int bpfbox_xdp_adjust_head(struct bpfbox_xdp_buff __bpfbox *xdp, int offset)
 {
-	void __bpfbox *xdp_frame_end = *unbox(&xdp->data_hard_start) + sizeof(struct xdp_frame);
 	void __bpfbox *data = *unbox(&xdp->data);
 	void __bpfbox *data_meta = *unbox(&xdp->data_meta);
 	unsigned long metalen = (unlikely(data_meta > data)) ? 0 : data - data_meta;
+	void __bpfbox *xdp_frame_end = *unbox(&xdp->data_hard_start) + sizeof(struct xdp_frame);
 	void __bpfbox *data_start = xdp_frame_end + metalen;
 	void __bpfbox *new_data = *unbox(&xdp->data) + offset;
-	void __bpfbox *clear_start = metalen ? *unbox(&xdp->data_meta) + offset : data + offset;
+	void __bpfbox *clear_start = metalen ? data_meta + offset : data + offset;
 
 
 	if (unlikely(new_data < data_start ||
@@ -1229,7 +1229,6 @@ int bpfbox_xdp_adjust_head(struct bpfbox_xdp_buff __bpfbox *xdp, int offset)
 
 	memset(unsafe_unbox(clear_start), 0, -offset);
 	if (metalen) {
-		void __bpfbox *data_meta = *unbox(&xdp->data_meta);
 		memmove(unsafe_unbox(data_meta + offset),
 			unsafe_unbox(data_meta), metalen);
 	}
@@ -1239,3 +1238,32 @@ int bpfbox_xdp_adjust_head(struct bpfbox_xdp_buff __bpfbox *xdp, int offset)
 
 	return 0;
 }
+
+/* int bpfbox_xdp_adjust_head(struct bpfbox_xdp_buff __bpfbox *_xdp, int offset) */
+/* { */
+/* 	struct bpfbox_xdp_buff *xdp = unsafe_unbox(_xdp); */
+/* 	void __bpfbox *xdp_frame_end = &xdp->data_hard_start + sizeof(struct xdp_frame); */
+/* 	void __bpfbox *data = xdp->data; */
+/* 	void __bpfbox *data_meta = xdp->data_meta; */
+/* 	unsigned long metalen = (unlikely(data_meta > data)) ? 0 : data - data_meta; */
+/* 	void __bpfbox *data_start = xdp_frame_end + metalen; */
+/* 	void __bpfbox *new_data = xdp->data + offset; */
+/* 	void __bpfbox *clear_start = metalen ? xdp->data_meta + offset : data + offset; */
+
+
+/* 	if (unlikely(new_data < data_start || */
+/* 		     new_data > xdp->data_end - ETH_HLEN)) */
+/* 		return -EINVAL; */
+
+/* 	memset(unsafe_unbox(clear_start), 0, -offset); */
+/* 	if (metalen) { */
+/* 		void __bpfbox *data_meta = *unbox(&xdp->data_meta); */
+/* 		memmove(unsafe_unbox(data_meta + offset), */
+/* 			unsafe_unbox(data_meta), metalen); */
+/* 	} */
+
+/* 	*unbox(&xdp->data_meta) += offset; */
+/* 	*unbox(&xdp->data) = data; */
+
+/* 	return 0; */
+/* } */
