@@ -65,6 +65,7 @@ static bool __bpf_test_timer_continue(struct bpf_test_timer *t, int iterations,
 				    void *packet, bool xdp)
 	__must_hold(rcu)
 {
+	int size;
 	t->i += iterations;
 	if (t->i >= repeat) {
 		/* We're done. */
@@ -101,16 +102,21 @@ static bool __bpf_test_timer_continue(struct bpf_test_timer *t, int iterations,
 	if (xdp && ctx_use && ctx_orig && packet) {
 		struct xdp_buff *ctx = ctx_use;
 		struct xdp_buff *xdp_ctx_orig = ctx_orig;
-		int size = xdp_ctx_orig->data_end - xdp_ctx_orig->data_hard_start + 1;
+		size = xdp_ctx_orig->data_end - xdp_ctx_orig->data_hard_start + 1;
 		memcpy(ctx, xdp_ctx_orig, sizeof(struct xdp_buff));
 		ctx->data_end        = packet + (ctx->data_end - ctx->data_hard_start);
 		ctx->data            = packet + (ctx->data - ctx->data_hard_start);
 		ctx->data_meta       = packet + (ctx->data_meta - ctx->data_hard_start);
 		ctx->data_hard_start = packet;
-		memcpy(packet, xdp_ctx_orig->data_hard_start, size);
 	}
 
 	bpf_test_timer_enter(t);
+	if (xdp) {
+		struct xdp_buff *xdp_ctx_orig = ctx_orig;
+		memcpy(packet + (xdp_ctx_orig->data_hard_start - xdp_ctx_orig->data_hard_start),
+			xdp_ctx_orig->data_hard_start, size);
+	}
+
 	/* Do another round. */
 	return true;
 
@@ -439,7 +445,7 @@ static int bpf_test_run(struct bpf_prog *prog, void *ctx, u32 repeat,
 	struct bpf_test_timer t = { NO_MIGRATE };
 	struct xdp_buff *new_ctx = NULL;
 	struct sk_buff *new_skb = NULL;
-	void *packet = NULL;
+	void *packet = NULL, *copy_back = NULL;
 	enum bpf_cgroup_storage_type stype;
 	int ret, size;
 
@@ -506,7 +512,8 @@ static int bpf_test_run(struct bpf_prog *prog, void *ctx, u32 repeat,
 
 	if (xdp) {
 		struct xdp_buff *orig_ctx = ctx;
-		/* size = new_ctx->data_end - new_ctx->data_hard_start + 1; */
+		size = new_ctx->data_end - new_ctx->data_hard_start + 1;
+		copy_back = packet + (new_ctx->data_hard_start - new_ctx->data_hard_start);
 		if (new_ctx->data_hard_start != packet)
 			BUG();
 		orig_ctx->data = orig_ctx->data_hard_start + \
@@ -527,7 +534,7 @@ static int bpf_test_run(struct bpf_prog *prog, void *ctx, u32 repeat,
 
 	if (xdp) {
 		struct xdp_buff *orig_ctx = ctx;
-		memcpy(orig_ctx->data_hard_start, packet, size);
+		memcpy(orig_ctx->data_hard_start, copy_back, size);
 		bpfbox_free(packet);
 	} else {
 		/* probably don't need to copy skb stuff */
