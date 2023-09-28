@@ -1234,7 +1234,7 @@ int bpfbox_xdp_adjust_head(struct bpfbox_xdp_buff __bpfbox *xdp, int offset)
 	}
 
 	*unbox(&xdp->data_meta) += offset;
-	*unbox(&xdp->data) = data;
+	*unbox(&xdp->data) = new_data;
 
 	return 0;
 }
