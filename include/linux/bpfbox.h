@@ -88,4 +88,7 @@ int init_bpfbox_stack(void);
 void __bpfbox *open_bpf_scratch(int size);
 void close_bpf_scratch(int size);
 
+void __bpfbox *kernel_open_bpf_scratch(int size);
+void kernel_close_bpf_scratch(int size);
+
 #endif

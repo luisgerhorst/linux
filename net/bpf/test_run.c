@@ -50,6 +50,7 @@ static void bpf_test_timer_enter(struct bpf_test_timer *t)
 static void bpf_test_timer_leave(struct bpf_test_timer *t)
 	__releases(rcu)
 {
+	t->time_spent += rdtsc_ordered() - t->time_start;
 	t->time_start = 0;
 
 	if (t->mode == NO_PREEMPT)
@@ -59,10 +60,33 @@ static void bpf_test_timer_leave(struct bpf_test_timer *t)
 	rcu_read_unlock();
 }
 
+/* static void copy_skb_to_skb(struct sk_buff *to, struct sk_buff *from) */
+/* { */
+/* 	struct qdisc_skb_cb *cb_from = (struct qdisc_skb_cb *)from->cb; */
+/* 	struct qdisc_skb_cb *cb_to = (struct qdisc_skb_cb *)to->cb; */
+
+/* 	to->len = from->len; */
+/* 	to->mark = from->mark; */
+/* 	to->priority = from->priority; */
+/* 	to->skb_iif = from->skb_iif; */
+/* 	to->tstamp = from->tstamp; */
+/* 	to->vlan_present = from->vlan_present; */
+/* 	to->vlan_proto = from->vlan_proto; */
+/* 	to->pkt_type = from->pkt_type; */
+/* 	to->protocol = from->protocol; */
+/* 	to->hash = from->hash; */
+/* 	memcpy(&cb_to->data, &cb_from->data, QDISC_CB_PRIV_LEN); */
+
+/* 	cb_to->pkt_len = cb_from->pkt_len; */
+
+/* 	skb_shinfo(to)->gso_segs = skb_shinfo(from)->gso_segs; */
+/* 	skb_shinfo(to)->hwtstamps.hwtstamp = skb_shinfo(from)->hwtstamps.hwtstamp; */
+/* } */
+
 static bool __bpf_test_timer_continue(struct bpf_test_timer *t, int iterations,
 				    u32 repeat, int *err, u32 *duration,
 				    void *ctx_use, void *ctx_orig,
-				    void *packet, bool xdp)
+				void *packet, bool xdp)
 	__must_hold(rcu)
 {
 	int size;
@@ -115,6 +139,13 @@ static bool __bpf_test_timer_continue(struct bpf_test_timer *t, int iterations,
 		struct xdp_buff *xdp_ctx_orig = ctx_orig;
 		memcpy(packet + (xdp_ctx_orig->data_meta - xdp_ctx_orig->data_hard_start),
 			xdp_ctx_orig->data_meta, size);
+	} else {
+		struct sk_buff *old_skb = ctx_orig;
+		struct sk_buff *new_skb = ctx_use;
+		memcpy(ctx_use, ctx_orig, sizeof(struct sk_buff));
+		new_skb->head     = packet;
+		new_skb->data     = packet + (old_skb->data - old_skb->head);
+		memcpy(packet + (old_skb->data - old_skb->head), old_skb->data, old_skb->len);
 	}
 
 	/* Do another round. */
@@ -412,42 +443,104 @@ static int bpf_test_run_xdp_live(struct bpf_prog *prog, struct xdp_buff *ctx,
 	return ret;
 }
 
-static void copy_skb_to_skb(struct sk_buff *to, struct sk_buff *from)
+static void *xdp_setup_packet_buffer(struct xdp_buff *xdp)
 {
-	struct qdisc_skb_cb *cb_from = (struct qdisc_skb_cb *)from->cb;
-	struct qdisc_skb_cb *cb_to = (struct qdisc_skb_cb *)to->cb;
-
-	to->len = from->len;
-	to->mark = from->mark;
-	to->priority = from->priority;
-	to->skb_iif = from->skb_iif;
-	to->tstamp = from->tstamp;
-	to->vlan_present = from->vlan_present;
-	to->vlan_proto = from->vlan_proto;
-	to->pkt_type = from->pkt_type;
-	to->protocol = from->protocol;
-	to->hash = from->hash;
-	memcpy(&cb_to->data, &cb_from->data, QDISC_CB_PRIV_LEN);
-
-	cb_to->pkt_len = cb_from->pkt_len;
-
-	skb_shinfo(to)->gso_segs = skb_shinfo(from)->gso_segs;
-	skb_shinfo(to)->hwtstamps.hwtstamp = skb_shinfo(from)->hwtstamps.hwtstamp;
+	int size = xdp->data_end - xdp->data_meta + 1;
+	void *packet = bpfbox_alloc(PAGE_SIZE);
+	if (!packet)
+		return NULL;
+	BUG_ON(size > PAGE_SIZE);
+	memcpy(packet, xdp->data_meta, size);
+	return packet;
 }
 
-static int bpf_test_run(struct bpf_prog *prog, void *ctx, u32 repeat,
-			u32 *retval, u32 *time, bool xdp)
+static void *sk_filter_setup_packet_buffer(struct sk_buff *skb)
+{
+	int size = skb->end + SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+	void *packet = bpfbox_alloc(size);
+	if (!packet)
+		return NULL;
+	memcpy(packet, skb->head, skb->data_len);
+	return packet;
+}
+
+static void xdp_reset_context(struct xdp_buff *to, struct xdp_buff *from, void *packet)
+{
+	unsigned long diff = (unsigned long)packet - (unsigned long)(from->data_hard_start);
+	memcpy(to, from, sizeof(struct xdp_buff));
+	to->data_hard_start = packet;
+	to->data_end += diff;
+	to->data += diff;
+	to->data_meta += diff;
+}
+
+static void xdp_reset_packet(struct xdp_buff *to, struct xdp_buff *from)
+{
+	int size = from->data_end - from->data_meta + 1;
+	memcpy(to->data_meta, from->data_meta, size);
+}
+
+static struct xdp_buff *xdp_setup_context(struct xdp_buff *from, void *packet)
+{
+	struct xdp_buff *to = bpfbox_alloc(sizeof(struct xdp_buff));
+	if (!to)
+		return NULL;
+	xdp_reset_context(to, from, packet);
+	return to;
+}
+
+static int xdp_teardown_context(struct xdp_buff *new, struct xdp_buff *back)
+{
+	void *packet = new->data_hard_start;
+	void *copy_back = packet + (new->data_meta - new->data_hard_start);
+	int size = new->data_end - new->data_meta + 1;
+	back->data      = back->data_hard_start + (new->data - new->data_hard_start);
+	back->data_meta = back->data_hard_start + (new->data_meta - new->data_hard_start);
+	back->data_end  = back->data_hard_start + (new->data_end - new->data_hard_start);
+	memcpy(back->data_meta, copy_back, size);
+	bpfbox_free(new);
+	return 0;
+}
+
+
+static bool __bpf_test_timer_done(struct bpf_test_timer *t, u32 repeat,
+				  int *err, u32 *duration)
+	__must_hold(rcu)
+{
+	if (signal_pending(current)) {
+		*err = -EINTR;
+		return false;
+	}
+	if (t->i >= repeat) {
+		/* We're done. */
+		t->time_spent = t->time_spent / t->i;
+		*duration = t->time_spent > U32_MAX ? U32_MAX : (u32)t->time_spent;
+		*err = 0;
+		return false;
+	} else {
+		return true;
+	}
+}
+
+static void __bpf_test_timer_next(struct bpf_test_timer *t)
+	__must_hold(rcu)
+{
+	t->i += 1;
+}
+
+
+static int bpf_test_run_xdp(struct bpf_prog *prog, void *ctx, u32 repeat,
+			u32 *retval, u32 *time)
 {
 	struct bpf_prog_array_item
 		item = {.prog = prog};
 	struct bpf_run_ctx *old_ctx;
 	struct bpf_cg_run_ctx run_ctx;
 	struct bpf_test_timer t = { NO_MIGRATE };
-	struct xdp_buff *new_ctx = NULL;
-	struct sk_buff *new_skb = NULL;
-	void *packet = NULL, *copy_back = NULL;
+	void *new_ctx = NULL;
+	void *packet = NULL;
 	enum bpf_cgroup_storage_type stype;
-	int ret, size;
+	int ret;
 
 	BUG_ON(prog->type != BPF_PROG_TYPE_XDP && prog->type != BPF_PROG_TYPE_SOCKET_FILTER);
 	for_each_cgroup_storage_type(stype) {
@@ -460,86 +553,127 @@ static int bpf_test_run(struct bpf_prog *prog, void *ctx, u32 repeat,
 		}
 	}
 
-	if (xdp) {
-		struct xdp_buff *orig_ctx = ctx;
-		size = orig_ctx->data_end - orig_ctx->data_hard_start + 1;
-		packet = bpfbox_alloc(PAGE_SIZE);
-		BUG_ON(size > PAGE_SIZE);
-		if (!packet)
-			return -ENOMEM;
-		memcpy(packet, orig_ctx->data_hard_start, size);
-	} else {
-		struct sk_buff *orig_ctx = ctx;
-		size = orig_ctx->tail + SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
-		packet = bpfbox_alloc(size);
-		if (!packet)
-			return -ENOMEM;
-		memcpy(packet, orig_ctx->head, size);
-	}
+	/* prefetch(&prog->aux->ctx_access_cnt); */
+
+	packet = xdp_setup_packet_buffer(ctx);
+	if (!packet)
+		return -ENOMEM;
 
 	if (!repeat)
 		repeat = 1;
 
-	if (xdp) {
-		new_ctx = bpfbox_alloc(sizeof(struct xdp_buff));
-		memcpy(new_ctx, ctx, sizeof(struct xdp_buff));
-		new_ctx->data_end        = packet + (new_ctx->data_end - new_ctx->data_hard_start);
-		new_ctx->data            = packet + (new_ctx->data - new_ctx->data_hard_start);
-		new_ctx->data_meta       = packet + (new_ctx->data_meta - new_ctx->data_hard_start);
-		new_ctx->data_hard_start = packet;
-	} else {
-		struct sk_buff *old_skb = ctx;
-		new_skb = bpfbox_alloc(sizeof(struct sk_buff));
-		new_skb->head     = packet;
-		new_skb->data     = packet + (old_skb->data - old_skb->head);
-		new_skb->tail     = old_skb->tail;
-		new_skb->end      = old_skb->end;
-		new_skb->len      = old_skb->len;
-		new_skb->data_len = old_skb->data_len;
-		copy_skb_to_skb(new_skb, old_skb);
-	}
-	old_ctx = bpf_set_run_ctx(&run_ctx.run_ctx);
-	bpf_test_timer_enter(&t);
-	do {
-		run_ctx.prog_item = &item;
-		if (xdp) {
-			*retval = bpf_prog_run_xdp(prog, new_ctx);
-		} else {
-			*retval = bpf_prog_run_skb(prog, new_skb);
-		}
-	} while (__bpf_test_timer_continue(&t, 1, repeat, &ret, time, new_ctx, ctx, packet, xdp));
-	bpf_reset_run_ctx(old_ctx);
-	bpf_test_timer_leave(&t);
+	new_ctx = (void *) xdp_setup_context(ctx, packet);
+	if (!new_ctx)
+		return -ENOMEM;
 
-	if (xdp) {
-		struct xdp_buff *orig_ctx = ctx;
-		size = new_ctx->data_end - new_ctx->data_meta + 1;
-		copy_back = packet + (new_ctx->data_meta - new_ctx->data_hard_start);
-		if (new_ctx->data_hard_start != packet)
-			BUG();
-		orig_ctx->data = orig_ctx->data_hard_start + \
-			(new_ctx->data - new_ctx->data_hard_start);
-		orig_ctx->data_meta = orig_ctx->data_hard_start + \
-			(new_ctx->data_meta - new_ctx->data_hard_start);
-		orig_ctx->data_end = orig_ctx->data_hard_start + \
-			(new_ctx->data_end - new_ctx->data_hard_start);
-		memcpy(orig_ctx->data_hard_start + \
-			(new_ctx->data_meta - new_ctx->data_hard_start), \
-			copy_back, size);
-		bpfbox_free(new_ctx);
-	} else {
-		bpfbox_free(new_skb);
+	old_ctx = bpf_set_run_ctx(&run_ctx.run_ctx);
+
+	for (; (prefetch(((struct xdp_buff*)ctx)->data),
+		prefetch(((struct xdp_buff*)new_ctx)->data),
+		__bpf_test_timer_done(&t, repeat, &ret, time));
+	     __bpf_test_timer_next(&t)) {
+		/* if (need_resched()) { */
+		/* 	cond_resched(); */
+		/* } */
+
+		xdp_reset_context(new_ctx, ctx, packet);
+		bpf_test_timer_enter(&t);
+		xdp_reset_packet(new_ctx, ctx);
+
+		run_ctx.prog_item = &item;
+		*retval = bpf_prog_run_xdp(prog, new_ctx);
+		bpf_test_timer_leave(&t);
 	}
+	bpf_reset_run_ctx(old_ctx);
+
+
+	xdp_teardown_context(new_ctx, ctx);
 
 	for_each_cgroup_storage_type(stype)
 		bpf_cgroup_storage_free(item.cgroup_storage[stype]);
 
-	if (xdp) {
-		bpfbox_free(packet);
-	} else {
-		/* probably don't need to copy skb stuff */
-		bpfbox_free(packet);
+	bpfbox_free(packet);
+	return ret;
+}
+
+static void sk_filter_reset_context(struct sk_buff *to, struct sk_buff *from,
+				    void *packet, struct bpf_prog *prog)
+{
+	bpf_ctx_copy(prog, to, from, sizeof(struct sk_buff));
+	to->head = packet;
+	to->data = packet;
+	memcpy(to->data, from->data, min(from->len, prog->max_pkt_offset));
+}
+
+static struct sk_buff *sk_filter_setup_context(struct sk_buff *from, void *packet,
+					struct bpf_prog *prog)
+{
+	struct sk_buff *to = bpfbox_alloc(sizeof(struct sk_buff));
+	if (!to)
+		return NULL;
+	sk_filter_reset_context(to, from, packet, prog);
+	return to;
+}
+
+static int bpf_test_run_skb(struct bpf_prog *prog, void *ctx, u32 repeat,
+			u32 *retval, u32 *time)
+{
+	struct bpf_prog_array_item
+		item = {.prog = prog};
+	struct bpf_run_ctx *old_ctx;
+	struct bpf_cg_run_ctx run_ctx;
+	struct bpf_test_timer t = { NO_MIGRATE };
+	void *new_ctx = NULL;
+	struct sk_buff *new_skb = (struct sk_buff *) new_ctx;
+	void *packet = NULL;
+	enum bpf_cgroup_storage_type stype;
+	int ret;
+
+	BUG_ON(prog->type != BPF_PROG_TYPE_XDP && prog->type != BPF_PROG_TYPE_SOCKET_FILTER);
+	for_each_cgroup_storage_type(stype) {
+		item.cgroup_storage[stype] = bpf_cgroup_storage_alloc(prog, stype);
+		if (IS_ERR(item.cgroup_storage[stype])) {
+			item.cgroup_storage[stype] = NULL;
+			for_each_cgroup_storage_type(stype)
+				bpf_cgroup_storage_free(item.cgroup_storage[stype]);
+			return -ENOMEM;
+		}
 	}
+
+	packet = sk_filter_setup_packet_buffer(ctx);
+	if (!packet)
+		return -ENOMEM;
+
+	if (!repeat)
+		repeat = 1;
+
+	new_ctx = (void *) sk_filter_setup_context(ctx, packet, prog);
+	if (!new_ctx)
+		return -ENOMEM;
+
+	old_ctx = bpf_set_run_ctx(&run_ctx.run_ctx);
+	for (; (prefetch(&prog->ctx_access_cnt),
+		__bpf_test_timer_done(&t, repeat, &ret, time));
+	     __bpf_test_timer_next(&t)) {
+		/* if (need_resched()) { */
+		/* 	cond_resched(); */
+		/* } */
+
+		bpf_test_timer_enter(&t);
+		sk_filter_reset_context(new_ctx, ctx, packet, prog);
+		run_ctx.prog_item = &item;
+		*retval = bpf_prog_run_skb(prog, new_ctx);
+		bpf_test_timer_leave(&t);
+	}
+	bpf_reset_run_ctx(old_ctx);
+
+	bpfbox_free(new_skb);
+
+	for_each_cgroup_storage_type(stype)
+		bpf_cgroup_storage_free(item.cgroup_storage[stype]);
+
+	/* probably don't need to copy skb stuff */
+	bpfbox_free(packet);
 	return ret;
 }
 
@@ -1310,7 +1444,7 @@ int bpf_prog_test_run_skb(struct bpf_prog *prog, const union bpf_attr *kattr,
 	ret = convert___skb_to_skb(skb, ctx);
 	if (ret)
 		goto out;
-	ret = bpf_test_run(prog, skb, repeat, &retval, &duration, false);
+	ret = bpf_test_run_skb(prog, skb, repeat, &retval, &duration);
 	if (ret)
 		goto out;
 	if (!is_l2) {
@@ -1521,7 +1655,7 @@ int bpf_prog_test_run_xdp(struct bpf_prog *prog, const union bpf_attr *kattr,
 		BUG();
 		ret = bpf_test_run_xdp_live(prog, &xdp, repeat, batch_size, &duration);
 	} else {
-		ret = bpf_test_run(prog, &xdp, repeat, &retval, &duration, true);
+		ret = bpf_test_run_xdp(prog, &xdp, repeat, &retval, &duration);
 	}
 	/* We convert the xdp_buff back to an xdp_md before checking the return
 	 * code so the reference count of any held netdevice will be decremented

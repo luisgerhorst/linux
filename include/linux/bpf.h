@@ -1130,12 +1130,19 @@ struct btf_mod_pair {
 
 struct bpf_kfunc_desc_tab;
 
+struct bpf_context_access {
+	u16 offset;
+	u8 width;
+};
+
+#define MAX_RECORD_CTX_ACCESS 16
+
 struct bpf_prog_aux {
 	atomic64_t refcnt;
 	u32 used_map_cnt;
 	u32 used_btf_cnt;
 	u32 max_ctx_offset;
-	u32 max_pkt_offset;
+	/* u32 max_pkt_offset; */
 	u32 max_tp_access;
 	u32 stack_depth;
 	u32 id;
@@ -1244,6 +1251,9 @@ struct bpf_prog {
 	unsigned int		(*bpf_func)(const void *ctx,
 					    const struct bpf_insn *insn);
 	struct bpf_prog_aux	*aux;		/* Auxiliary fields */
+	u32 max_pkt_offset;
+	int ctx_access_cnt;
+	struct bpf_context_access ctx_access[MAX_RECORD_CTX_ACCESS];
 	struct sock_fprog_kern	*orig_prog;	/* Original BPF program */
 	/* Instructions for interpreter */
 	union {
@@ -1251,6 +1261,60 @@ struct bpf_prog {
 		DECLARE_FLEX_ARRAY(struct bpf_insn, insnsi);
 	};
 };
+
+static inline int bpf_record_ctx_access(struct bpf_prog *prog, int offset, u8 width)
+{
+	int i, cnt;
+	if (!prog)
+		return 0;
+	cnt = prog->ctx_access_cnt;
+	if (cnt >= MAX_RECORD_CTX_ACCESS)
+		return -1;
+	for (i = 0; i < cnt; i++) {
+		if (prog->ctx_access[i].offset == offset &&\
+		    prog->ctx_access[i].width == width) {
+			return i;
+		}
+	}
+	prog->ctx_access[cnt].offset = offset;
+	prog->ctx_access[cnt].width = width;
+	prog->ctx_access_cnt ++;
+	return cnt;
+}
+
+static inline void bpf_unclear_ctx_access(struct bpf_prog *prog)
+{
+	if (!prog) return;
+	prog->ctx_access_cnt = MAX_RECORD_CTX_ACCESS + 1;
+}
+
+static inline int bpf_ctx_copy(const struct bpf_prog *prog, void *to, const void *from, int size)
+{
+	int i, cnt = prog->ctx_access_cnt;
+	if (cnt > MAX_RECORD_CTX_ACCESS) {
+		memcpy(to, from, size);
+		return size;
+	}
+	for (i = 0; i < cnt; i++) {
+		u32 offset = prog->ctx_access[i].offset;
+		u8 width = prog->ctx_access[i].width;
+		switch(width) {
+		case BPF_B:
+			*(u8*)(to + offset) = *(u8*)(from + offset);
+			break;
+		case BPF_H:
+			*(u16*)(to + offset) = *(u16*)(from + offset);
+			break;
+		case BPF_W:
+			*(u32*)(to + offset) = *(u32*)(from + offset);
+			break;
+		case BPF_DW:
+			*(u64*)(to + offset) = *(u64*)(from + offset);
+			break;
+		}
+	}
+	return cnt;
+}
 
 struct bpf_array_aux {
 	/* Programs with direct jumps into programs part of this array. */

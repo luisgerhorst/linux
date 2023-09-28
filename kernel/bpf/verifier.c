@@ -3976,8 +3976,8 @@ static int check_packet_access(struct bpf_verifier_env *env, u32 regno, int off,
 	 * that __check_mem_access would have rejected this pkt access.
 	 * Therefore, "off + reg->umax_value + size - 1" won't overflow u32.
 	 */
-	env->prog->aux->max_pkt_offset =
-		max_t(u32, env->prog->aux->max_pkt_offset,
+	env->prog->max_pkt_offset =
+		max_t(u32, env->prog->max_pkt_offset,
 		      off + reg->umax_value + size - 1);
 
 	return err;
@@ -12195,6 +12195,13 @@ static int do_check(struct bpf_verifier_env *env)
 	bool do_print_state = false;
 	int prev_insn_idx = -1;
 
+	if (env->prog->type == BPF_PROG_TYPE_SOCKET_FILTER) {
+		bpf_record_ctx_access(env->prog, offsetof(struct sk_buff, data),
+				BPF_FIELD_SIZEOF(struct sk_buff, data));
+		bpf_record_ctx_access(env->prog, offsetof(struct sk_buff, len), BPF_W);
+		bpf_record_ctx_access(env->prog,
+				offsetof(struct sk_buff, data_len), BPF_W);
+	}
 	for (;;) {
 		struct bpf_insn *insn;
 		u8 class;
@@ -14016,6 +14023,29 @@ static int do_misc_fixups(struct bpf_verifier_env *env)
 		    (BPF_MODE(insn->code) == BPF_ABS ||
 		     BPF_MODE(insn->code) == BPF_IND)) {
 			cnt = env->ops->gen_ld_abs(insn, insn_buf);
+			if (BPF_MODE(insn->code) == BPF_IND) {
+				prog->max_pkt_offset = MAX_PACKET_OFF;
+			} else {
+				int cur = insn->imm;
+				switch (BPF_SIZE(insn->code)) {
+				case BPF_B:
+					cur += 1;
+					break;
+				case BPF_H:
+					cur += 2;
+					break;
+				case BPF_W:
+					cur += 4;
+					break;
+				case BPF_DW:
+					cur += 8;
+					break;
+				default:
+					BUG();
+				}
+				prog->max_pkt_offset = max(prog->max_pkt_offset,
+							(unsigned int)cur);
+			}
 			if (cnt == 0 || cnt >= ARRAY_SIZE(insn_buf)) {
 				verbose(env, "bpf verifier is misconfigured\n");
 				return -EINVAL;
@@ -14134,7 +14164,7 @@ static int do_misc_fixups(struct bpf_verifier_env *env)
 			prog->cb_access = 1;
 			if (!allow_tail_call_in_subprogs(env))
 				prog->aux->stack_depth = MAX_BPF_STACK;
-			prog->aux->max_pkt_offset = MAX_PACKET_OFF;
+			prog->max_pkt_offset = MAX_PACKET_OFF;
 
 			/* mark bpf_tail_call as different opcode to avoid
 			 * conditional branch in the interpreter for every normal

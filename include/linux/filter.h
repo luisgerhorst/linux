@@ -612,7 +612,7 @@ static __always_inline u32 __bpf_prog_run(const struct bpf_prog *prog,
 	return ret;
 }
 
-static __always_inline u32 bpf_prog_run_skb(const struct bpf_prog *prog, struct sk_buff *skb)
+static inline u32 bpf_prog_run_skb(const struct bpf_prog *prog, struct sk_buff *skb)
 {
 	int ret;
 	skb->head = bpf_box_ptr(skb->head);
@@ -641,8 +641,23 @@ static inline u32 bpf_prog_run_pin_on_cpu(const struct bpf_prog *prog,
 {
 	u32 ret;
 
+	const struct sk_buff *skb = ctx;
+	u32 size = min(skb->len, prog->max_pkt_offset);
+	struct sk_buff __bpfbox *dup_context;
+	void __bpfbox *dup_packet;
+
 	migrate_disable();
-	ret = bpf_prog_run(prog, ctx);
+	dup_context = kernel_open_bpf_scratch(sizeof(struct sk_buff));
+	dup_packet = kernel_open_bpf_scratch(size);
+	memcpy(bpf_unbox_ptr(dup_packet), skb->data, size);
+	memcpy(bpf_unbox_ptr(dup_context), skb, sizeof(struct sk_buff));
+	bpf_unbox_ptr(dup_context)->data = (void *)(unsigned long)dup_packet;
+
+	ret = bpf_prog_run(prog, dup_context);
+
+	kernel_close_bpf_scratch(size);
+	kernel_close_bpf_scratch(sizeof(struct sk_buff));
+
 	migrate_enable();
 	return ret;
 }
@@ -734,6 +749,27 @@ static inline u8 *bpf_skb_cb(const struct sk_buff *skb)
 	return qdisc_skb_cb(skb)->data;
 }
 
+static inline void copy_skb_to_skb(struct sk_buff *to, const struct sk_buff *from)
+{
+	struct qdisc_skb_cb *cb_from = (struct qdisc_skb_cb *)from->cb;
+	struct qdisc_skb_cb *cb_to = (struct qdisc_skb_cb *)to->cb;
+
+	to->len = from->len;
+	to->mark = from->mark;
+	to->priority = from->priority;
+	to->skb_iif = from->skb_iif;
+	to->tstamp = from->tstamp;
+	to->vlan_present = from->vlan_present;
+	to->vlan_proto = from->vlan_proto;
+	to->pkt_type = from->pkt_type;
+	to->protocol = from->protocol;
+	to->hash = from->hash;
+	memcpy(&cb_to->data, &cb_from->data, QDISC_CB_PRIV_LEN);
+
+	cb_to->pkt_len = cb_from->pkt_len;
+
+}
+
 /* Must be invoked with migration disabled */
 static inline u32 __bpf_prog_run_save_cb(const struct bpf_prog *prog,
 					 const void *ctx)
@@ -741,15 +777,24 @@ static inline u32 __bpf_prog_run_save_cb(const struct bpf_prog *prog,
 	const struct sk_buff *skb = ctx;
 	u8 *cb_data = bpf_skb_cb(skb);
 	u8 cb_saved[BPF_SKB_CB_LEN];
+	u32 size = min(skb->len, prog->max_pkt_offset);
 	u32 res;
+	struct sk_buff __bpfbox *dup_context = kernel_open_bpf_scratch(sizeof(struct sk_buff));
+	void __bpfbox *dup_packet = kernel_open_bpf_scratch(size);
 
+	/* memcpy(bpf_unbox_ptr(dup_packet), skb->data, size); */
+	bpf_ctx_copy(prog, bpf_unbox_ptr(dup_context), ctx, sizeof(struct sk_buff));
+	/* memcpy(bpf_unbox_ptr(dup_context), skb, sizeof(struct sk_buff)); */
+	bpf_unbox_ptr(dup_context)->data = (void *)(unsigned long)dup_packet;
 	if (unlikely(prog->cb_access)) {
 		memcpy(cb_saved, cb_data, sizeof(cb_saved));
 		memset(cb_data, 0, sizeof(cb_saved));
 	}
 
-	res = bpf_prog_run(prog, skb);
+	res = bpf_prog_run(prog, dup_context);
 
+	kernel_close_bpf_scratch(size);
+	kernel_close_bpf_scratch(sizeof(struct sk_buff));
 	if (unlikely(prog->cb_access))
 		memcpy(cb_data, cb_saved, sizeof(cb_saved));
 
