@@ -443,66 +443,6 @@ static int bpf_test_run_xdp_live(struct bpf_prog *prog, struct xdp_buff *ctx,
 	return ret;
 }
 
-static void *xdp_setup_packet_buffer(struct xdp_buff *xdp)
-{
-	int size = xdp->data_end - xdp->data_meta + 1;
-	void *packet = bpfbox_alloc(PAGE_SIZE);
-	if (!packet)
-		return NULL;
-	BUG_ON(size > PAGE_SIZE);
-	memcpy(packet, xdp->data_meta, size);
-	return packet;
-}
-
-static void *sk_filter_setup_packet_buffer(struct sk_buff *skb)
-{
-	int size = skb->end + SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
-	void *packet = bpfbox_alloc(size);
-	if (!packet)
-		return NULL;
-	memcpy(packet, skb->head, skb->data_len);
-	return packet;
-}
-
-static void xdp_reset_context(struct xdp_buff *to, struct xdp_buff *from, void *packet)
-{
-	unsigned long diff = (unsigned long)packet - (unsigned long)(from->data_hard_start);
-	memcpy(to, from, sizeof(struct xdp_buff));
-	to->data_hard_start = packet;
-	to->data_end += diff;
-	to->data += diff;
-	to->data_meta += diff;
-}
-
-static void xdp_reset_packet(struct xdp_buff *to, struct xdp_buff *from)
-{
-	int size = from->data_end - from->data_meta + 1;
-	memcpy(to->data_meta, from->data_meta, size);
-}
-
-static struct xdp_buff *xdp_setup_context(struct xdp_buff *from, void *packet)
-{
-	struct xdp_buff *to = bpfbox_alloc(sizeof(struct xdp_buff));
-	if (!to)
-		return NULL;
-	xdp_reset_context(to, from, packet);
-	return to;
-}
-
-static int xdp_teardown_context(struct xdp_buff *new, struct xdp_buff *back)
-{
-	void *packet = new->data_hard_start;
-	void *copy_back = packet + (new->data_meta - new->data_hard_start);
-	int size = new->data_end - new->data_meta + 1;
-	back->data      = back->data_hard_start + (new->data - new->data_hard_start);
-	back->data_meta = back->data_hard_start + (new->data_meta - new->data_hard_start);
-	back->data_end  = back->data_hard_start + (new->data_end - new->data_hard_start);
-	memcpy(back->data_meta, copy_back, size);
-	bpfbox_free(new);
-	return 0;
-}
-
-
 static bool __bpf_test_timer_done(struct bpf_test_timer *t, u32 repeat,
 				  int *err, u32 *duration)
 	__must_hold(rcu)
@@ -526,6 +466,67 @@ static void __bpf_test_timer_next(struct bpf_test_timer *t)
 	__must_hold(rcu)
 {
 	t->i += 1;
+}
+
+
+static void *xdp_setup_packet_buffer(struct xdp_buff *xdp)
+{
+	int size = xdp->data_end - xdp->data_meta + 1;
+	void *packet = bpf_unbox_ptr(open_bpf_scratch(PAGE_SIZE) - PAGE_SIZE);
+	BUG_ON(size > PAGE_SIZE);
+	memcpy(packet, xdp->data_meta, size);
+	return packet;
+}
+
+static void *sk_filter_setup_packet_buffer(struct sk_buff *skb)
+{
+	int size = skb->end + SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+	void *packet = bpf_unbox_ptr(open_bpf_scratch(size) - size);
+	memcpy(packet, skb->head, skb->data_len);
+	return packet;
+}
+
+static void sk_filter_teardown_packet_buffer(struct sk_buff *skb)
+{
+	int size = skb->end + SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+	close_bpf_scratch(size);
+}
+
+static void xdp_reset_context(struct xdp_buff *to, struct xdp_buff *from, void *packet)
+{
+	unsigned long diff = (unsigned long)packet - (unsigned long)(from->data_hard_start);
+	memcpy(to, from, sizeof(struct xdp_buff));
+	to->data_hard_start = packet;
+	to->data_end += diff;
+	to->data += diff;
+	to->data_meta += diff;
+}
+
+static void xdp_reset_packet(struct xdp_buff *to, struct xdp_buff *from)
+{
+	int size = from->data_end - from->data_meta + 1;
+	memcpy(to->data_meta, from->data_meta, size);
+}
+
+static struct xdp_buff *xdp_setup_context(struct xdp_buff *from, void *packet)
+{
+	struct xdp_buff *to = bpf_unbox_ptr(kernel_open_bpf_scratch(sizeof(struct xdp_buff))\
+					- sizeof(struct xdp_buff));
+	xdp_reset_context(to, from, packet);
+	return to;
+}
+
+static int xdp_teardown_context(struct xdp_buff *new, struct xdp_buff *back)
+{
+	void *packet = new->data_hard_start;
+	void *copy_back = packet + (new->data_meta - new->data_hard_start);
+	int size = new->data_end - new->data_meta + 1;
+	back->data      = back->data_hard_start + (new->data - new->data_hard_start);
+	back->data_meta = back->data_hard_start + (new->data_meta - new->data_hard_start);
+	back->data_end  = back->data_hard_start + (new->data_end - new->data_hard_start);
+	memcpy(back->data_meta, copy_back, size);
+	close_bpf_scratch(sizeof(struct xdp_buff));
+	return 0;
 }
 
 
@@ -555,16 +556,13 @@ static int bpf_test_run_xdp(struct bpf_prog *prog, void *ctx, u32 repeat,
 
 	/* prefetch(&prog->aux->ctx_access_cnt); */
 
+	preempt_disable();
 	packet = xdp_setup_packet_buffer(ctx);
-	if (!packet)
-		return -ENOMEM;
 
 	if (!repeat)
 		repeat = 1;
 
 	new_ctx = (void *) xdp_setup_context(ctx, packet);
-	if (!new_ctx)
-		return -ENOMEM;
 
 	old_ctx = bpf_set_run_ctx(&run_ctx.run_ctx);
 
@@ -588,11 +586,11 @@ static int bpf_test_run_xdp(struct bpf_prog *prog, void *ctx, u32 repeat,
 
 
 	xdp_teardown_context(new_ctx, ctx);
-
 	for_each_cgroup_storage_type(stype)
 		bpf_cgroup_storage_free(item.cgroup_storage[stype]);
 
-	bpfbox_free(packet);
+	close_bpf_scratch(PAGE_SIZE);
+	preempt_enable();
 	return ret;
 }
 
@@ -600,17 +598,14 @@ static void sk_filter_reset_context(struct sk_buff *to, struct sk_buff *from,
 				    void *packet, struct bpf_prog *prog)
 {
 	bpf_ctx_copy(prog, to, from, sizeof(struct sk_buff));
-	to->head = packet;
-	to->data = packet;
-	memcpy(to->data, from->data, min(from->len, prog->max_pkt_offset));
+	memcpy(packet, from->data, round_up(min(from->len, prog->max_pkt_offset), 8));
 }
 
 static struct sk_buff *sk_filter_setup_context(struct sk_buff *from, void *packet,
 					struct bpf_prog *prog)
 {
-	struct sk_buff *to = bpfbox_alloc(sizeof(struct sk_buff));
-	if (!to)
-		return NULL;
+	struct sk_buff *to = bpf_unbox_ptr(open_bpf_scratch(sizeof(struct sk_buff))
+					- sizeof(struct sk_buff));
 	sk_filter_reset_context(to, from, packet, prog);
 	return to;
 }
@@ -624,7 +619,6 @@ static int bpf_test_run_skb(struct bpf_prog *prog, void *ctx, u32 repeat,
 	struct bpf_cg_run_ctx run_ctx;
 	struct bpf_test_timer t = { NO_MIGRATE };
 	void *new_ctx = NULL;
-	struct sk_buff *new_skb = (struct sk_buff *) new_ctx;
 	void *packet = NULL;
 	enum bpf_cgroup_storage_type stype;
 	int ret;
@@ -640,20 +634,16 @@ static int bpf_test_run_skb(struct bpf_prog *prog, void *ctx, u32 repeat,
 		}
 	}
 
+	preempt_disable();
 	packet = sk_filter_setup_packet_buffer(ctx);
-	if (!packet)
-		return -ENOMEM;
 
 	if (!repeat)
 		repeat = 1;
 
 	new_ctx = (void *) sk_filter_setup_context(ctx, packet, prog);
-	if (!new_ctx)
-		return -ENOMEM;
 
 	old_ctx = bpf_set_run_ctx(&run_ctx.run_ctx);
-	for (; (prefetch(&prog->ctx_access_cnt),
-		__bpf_test_timer_done(&t, repeat, &ret, time));
+	for (; (__bpf_test_timer_done(&t, repeat, &ret, time));
 	     __bpf_test_timer_next(&t)) {
 		/* if (need_resched()) { */
 		/* 	cond_resched(); */
@@ -667,13 +657,15 @@ static int bpf_test_run_skb(struct bpf_prog *prog, void *ctx, u32 repeat,
 	}
 	bpf_reset_run_ctx(old_ctx);
 
-	bpfbox_free(new_skb);
+	close_bpf_scratch(sizeof(struct sk_buff));
 
 	for_each_cgroup_storage_type(stype)
 		bpf_cgroup_storage_free(item.cgroup_storage[stype]);
 
 	/* probably don't need to copy skb stuff */
-	bpfbox_free(packet);
+	sk_filter_teardown_packet_buffer(ctx);
+
+	preempt_enable();
 	return ret;
 }
 
