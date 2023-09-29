@@ -487,7 +487,7 @@ bool nfp_bpf_offload_check_mtu(struct nfp_net *nn, struct bpf_prog *prog,
 	unsigned int fw_mtu, pkt_off;
 
 	fw_mtu = nn_readb(nn, NFP_NET_CFG_BPF_INL_MTU) * 64 - 32;
-	pkt_off = min(prog->aux->max_pkt_offset, mtu);
+	pkt_off = min(prog->max_pkt_offset, mtu);
 
 	return fw_mtu < pkt_off;
 }

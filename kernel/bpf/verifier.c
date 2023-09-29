@@ -14358,7 +14358,7 @@ patch_map_ops_generic:
 			switch (insn->imm) {
 			case BPF_FUNC_map_lookup_elem:
 				if (ops != &percpu_array_map_ops)
-					BUG();
+					return -EINVAL;
 				if (ops->tmp_bpfbox_map_lookup_elem) {
 					insn->imm = BPF_CALL_IMM(ops->tmp_bpfbox_map_lookup_elem);
 				} else if (ops->bpfbox_map_lookup_elem) {
