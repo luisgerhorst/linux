@@ -44,7 +44,7 @@ do {									\
 #define bpf_unbox_ptr(p) \
 ({			 \
 	BPFBOX_CHECK_VALID((p));				\
-	(typeof(*(p)) __kernel __force *)(BPFBOX_START + ((unsigned long)(p) & 0xffffffff)); \
+	(typeof(*(p)) __kernel __force *)(BPFBOX_START + (unsigned long)(unsigned int)(unsigned long)(p)); \
 })
 
 static inline void *fast_bpf_unbox_ptr(void __bpfbox *p)
@@ -63,7 +63,7 @@ static inline void *fast_bpf_unbox_ptr(void __bpfbox *p)
 
 static inline void __bpfbox *bpf_box_ptr(void *ptr)
 {
-	void __bpfbox *p = (void __bpfbox *)((unsigned long)(ptr - BPFBOX_START) & 0xffffffff);
+	void __bpfbox *p = (void __bpfbox *)(unsigned long)(unsigned int)(unsigned long)(ptr);
 	BPFBOX_CHECK_VALID(p);
 	return p;
 }
@@ -88,7 +88,18 @@ int init_bpfbox_stack(void);
 void __bpfbox *open_bpf_scratch(int size);
 void close_bpf_scratch(int size);
 
-void __bpfbox *kernel_open_bpf_scratch(int size);
-void kernel_close_bpf_scratch(int size);
+static inline void __bpfbox *kernel_open_bpf_scratch(int size)
+{
+	struct bpfbox_scratch_region *region;
+	long cur;
+	region = raw_cpu_ptr(&bpfbox_scratch_region);
+	cur = local_add_return(size, &region->sp);
+	return (void __bpfbox *)cur;
+}
+static inline void kernel_close_bpf_scratch(int size)
+{
+	struct bpfbox_scratch_region *region = this_cpu_ptr(&bpfbox_scratch_region);
+	local_sub(size, &region->sp);
+}
 
 #endif

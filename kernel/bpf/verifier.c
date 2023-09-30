@@ -12195,13 +12195,6 @@ static int do_check(struct bpf_verifier_env *env)
 	bool do_print_state = false;
 	int prev_insn_idx = -1;
 
-	if (env->prog->type == BPF_PROG_TYPE_SOCKET_FILTER) {
-		bpf_record_ctx_access(env->prog, offsetof(struct sk_buff, data),
-				BPF_FIELD_SIZEOF(struct sk_buff, data));
-		bpf_record_ctx_access(env->prog, offsetof(struct sk_buff, len), BPF_W);
-		bpf_record_ctx_access(env->prog,
-				offsetof(struct sk_buff, data_len), BPF_W);
-	}
 	for (;;) {
 		struct bpf_insn *insn;
 		u8 class;
@@ -14023,28 +14016,35 @@ static int do_misc_fixups(struct bpf_verifier_env *env)
 		    (BPF_MODE(insn->code) == BPF_ABS ||
 		     BPF_MODE(insn->code) == BPF_IND)) {
 			cnt = env->ops->gen_ld_abs(insn, insn_buf);
+			if (env->prog->type == BPF_PROG_TYPE_SOCKET_FILTER) {
+				bpf_record_ctx_access(env->prog, offsetof(struct sk_buff, data),
+						BPF_FIELD_SIZEOF(struct sk_buff, data));
+				bpf_record_ctx_access(env->prog, offsetof(struct sk_buff, len), BPF_W);
+				bpf_record_ctx_access(env->prog,
+						offsetof(struct sk_buff, data_len), BPF_W);
+			}
 			if (BPF_MODE(insn->code) == BPF_IND) {
 				prog->max_pkt_offset = MAX_PACKET_OFF;
 			} else {
 				int cur = insn->imm;
 				switch (BPF_SIZE(insn->code)) {
 				case BPF_B:
-					cur += 1;
 					break;
 				case BPF_H:
-					cur += 2;
+					cur += 1;
 					break;
 				case BPF_W:
-					cur += 4;
+					cur += 3;
 					break;
 				case BPF_DW:
-					cur += 8;
+					cur += 7;
 					break;
 				default:
 					BUG();
 				}
 				prog->max_pkt_offset = max(prog->max_pkt_offset,
 							(unsigned int)cur);
+				
 			}
 			if (cnt == 0 || cnt >= ARRAY_SIZE(insn_buf)) {
 				verbose(env, "bpf verifier is misconfigured\n");

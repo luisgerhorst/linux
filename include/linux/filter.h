@@ -612,14 +612,49 @@ static __always_inline u32 __bpf_prog_run(const struct bpf_prog *prog,
 	return ret;
 }
 
+static inline void *sk_filter_setup_packet_buffer(struct sk_buff *skb)
+{
+	int size = skb->end + SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+	void *packet = bpf_unbox_ptr(kernel_open_bpf_scratch(size) - size);
+	return packet;
+}
+
+static inline void sk_filter_teardown_packet_buffer(struct sk_buff *skb)
+{
+	int size = skb->end + SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+	kernel_close_bpf_scratch(size);
+}
+
+static inline void sk_filter_reset_context(struct sk_buff *to, struct sk_buff *from,
+				    void *packet, const struct bpf_prog *prog)
+{
+	bpf_ctx_copy(prog, to, from, sizeof(struct sk_buff));
+	memcpy(packet, from->data, round_up(min(from->len, prog->max_pkt_offset), 8));
+}
+
+static inline struct sk_buff *sk_filter_setup_context(struct sk_buff *from, void *packet,
+					const struct bpf_prog *prog)
+{
+	struct sk_buff *to = bpf_unbox_ptr(kernel_open_bpf_scratch(sizeof(struct sk_buff))
+					- sizeof(struct sk_buff));
+	sk_filter_reset_context(to, from, packet, prog);
+	return to;
+}
+
 static inline u32 bpf_prog_run_skb(const struct bpf_prog *prog, struct sk_buff *skb)
 {
+	struct sk_buff *new_skb;
+	void *packet;
 	int ret;
-	skb->head = bpf_box_ptr(skb->head);
-	skb->data = bpf_box_ptr(skb->data);
-	ret = __bpf_prog_run(prog, bpf_box_ptr(skb), bpf_dispatcher_nop_func);
-	skb->data = bpf_unbox_ptr(skb->data);
-	skb->head = bpf_unbox_ptr(skb->head);
+	packet = sk_filter_setup_packet_buffer(skb);
+	prefetch(packet);
+	new_skb = (void *) sk_filter_setup_context(skb, packet, prog);
+	prefetch(new_skb);
+	new_skb->head = bpf_box_ptr(packet);
+	new_skb->data = bpf_box_ptr(packet);
+	ret = __bpf_prog_run(prog, bpf_box_ptr(new_skb), bpf_dispatcher_nop_func);
+	kernel_close_bpf_scratch(sizeof(struct sk_buff));
+	sk_filter_teardown_packet_buffer(skb);
 	return ret;
 }
 
@@ -831,6 +866,47 @@ DECLARE_STATIC_KEY_FALSE(bpf_master_redirect_enabled_key);
 
 u32 xdp_master_redirect(struct xdp_buff *xdp);
 
+
+static void *xdp_setup_packet_buffer(struct xdp_buff *xdp)
+{
+	void *packet = bpf_unbox_ptr(kernel_open_bpf_scratch(PAGE_SIZE)) - PAGE_SIZE;
+	return packet;
+}
+
+static void xdp_reset_context(struct bpfbox_xdp_buff *to, struct xdp_buff *from, void *packet, long maxoff)
+{
+	int size;
+	unsigned long diff = (unsigned long)packet - (unsigned long)(from->data_hard_start);
+	to->data_end = bpf_box_ptr(from->data_end + diff);
+	to->data_hard_start = bpf_box_ptr(packet);
+	to->data = bpf_box_ptr(from->data + diff);
+	size = min(from->data_end - from->data_meta, maxoff) + 1;
+	to->data_meta = bpf_box_ptr(from->data_meta + diff);
+	memcpy(from->data_meta + diff, from->data_meta, size);
+}
+
+static struct bpfbox_xdp_buff *xdp_setup_context(struct xdp_buff *from, void *packet, long maxoff)
+{
+	struct bpfbox_xdp_buff *to = bpf_unbox_ptr(kernel_open_bpf_scratch(sizeof(struct xdp_buff)) \
+						- sizeof(struct xdp_buff));
+	xdp_reset_context(to, from, packet, maxoff);
+	return to;
+}
+
+static int xdp_teardown_context(struct bpfbox_xdp_buff *new, struct xdp_buff *back, long maxoff)
+{
+	void *copyback;
+	unsigned long diff = back->data_hard_start - bpf_unbox_ptr(new->data_hard_start);
+	int size = min(new->data_end - new->data_meta, maxoff) + 1;
+	back->data      = bpf_unbox_ptr(new->data) + diff;
+	back->data_end  = bpf_unbox_ptr(new->data_end) + diff;
+	copyback = bpf_unbox_ptr(new->data_meta);
+	back->data_meta = copyback + diff;
+	memcpy(back->data_meta, copyback, size);
+	kernel_close_bpf_scratch(sizeof(struct xdp_buff) + PAGE_SIZE);
+	return 0;
+}
+
 static __always_inline u32 bpf_prog_run_xdp(const struct bpf_prog *prog,
 					    struct xdp_buff *xdp)
 {
@@ -841,12 +917,17 @@ static __always_inline u32 bpf_prog_run_xdp(const struct bpf_prog *prog,
 
 	u32 act;
 
-	xdp->data = bpf_box_ptr(xdp->data);
-	xdp->data_hard_start = bpf_box_ptr(xdp->data_hard_start);
-	xdp->data_end = bpf_box_ptr(xdp->data_end);
-	xdp->data_meta = bpf_box_ptr(xdp->data_meta);
+	struct bpfbox_xdp_buff *new_xdp = NULL;
+	void *packet = NULL;
+	void *old_data = NULL;
+	long maxoff = prog->max_pkt_offset;
+	packet = xdp_setup_packet_buffer(xdp);
+	prefetch(packet);
+	new_xdp = xdp_setup_context(xdp, packet, maxoff);
+	prefetch(new_xdp);
+	old_data = new_xdp->data;
 
-	act = __bpf_prog_run(prog, bpf_box_ptr(xdp), BPF_DISPATCHER_FUNC(xdp));
+	act = __bpf_prog_run(prog, bpf_box_ptr(new_xdp), BPF_DISPATCHER_FUNC(xdp));
 
 	if (static_branch_unlikely(&bpf_master_redirect_enabled_key)) {
 		BUG();
@@ -854,11 +935,8 @@ static __always_inline u32 bpf_prog_run_xdp(const struct bpf_prog *prog,
 			act = xdp_master_redirect(xdp);
 	}
 
-	xdp->data_end = bpf_unbox_ptr(xdp->data_end);
-	xdp->data = bpf_unbox_ptr(xdp->data);
-	xdp->data_meta = bpf_unbox_ptr(xdp->data_meta);
-	xdp->data_hard_start = bpf_unbox_ptr(xdp->data_hard_start);
-
+	maxoff += (old_data - new_xdp->data);
+	xdp_teardown_context(new_xdp, xdp, maxoff);
 	return act;
 }
 

@@ -27,7 +27,7 @@ register unsigned long base asm ("r12");
 
 /* #define unbox(p)	\ */
 /* ({			\ */
-/* unsigned int masked_p = ((unsigned long)(p) & 0xffffffff);\ */
+/* 	unsigned int masked_p = ((unsigned int)(unsigned long)(p));	\ */
 /* volatile typeof(*(p)) *unboxed_p;\ */
 /* asm ("mov %1, %1\n\t"   \ */
 /*      "lea (%2, %q1), %0" \ */

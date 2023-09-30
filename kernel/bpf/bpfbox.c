@@ -63,19 +63,3 @@ int __init init_bpfbox_stack(void)
 }
 device_initcall(init_bpfbox_stack);
 
-void __bpfbox *kernel_open_bpf_scratch(int size)
-{
-	struct bpfbox_scratch_region *region;
-	long cur;
-	region = raw_cpu_ptr(&bpfbox_scratch_region);
-	cur = local_add_return(size, &region->sp);
-	return (void __bpfbox *)cur;
-}
-EXPORT_SYMBOL(kernel_open_bpf_scratch);
-
-void kernel_close_bpf_scratch(int size)
-{
-	struct bpfbox_scratch_region *region = this_cpu_ptr(&bpfbox_scratch_region);
-	local_sub(size, &region->sp);
-}
-EXPORT_SYMBOL(kernel_close_bpf_scratch);

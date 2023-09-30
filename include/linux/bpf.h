@@ -1299,14 +1299,14 @@ static inline int bpf_ctx_copy(const struct bpf_prog *prog, void *to, const void
 		u32 offset = prog->ctx_access[i].offset;
 		u8 width = prog->ctx_access[i].width;
 		switch(width) {
-		case BPF_B:
-			*(u8*)(to + offset) = *(u8*)(from + offset);
+		case BPF_W:
+			*(u32*)(to + offset) = *(u32*)(from + offset);
 			break;
 		case BPF_H:
 			*(u16*)(to + offset) = *(u16*)(from + offset);
 			break;
-		case BPF_W:
-			*(u32*)(to + offset) = *(u32*)(from + offset);
+		case BPF_B:
+			*(u8*)(to + offset) = *(u8*)(from + offset);
 			break;
 		case BPF_DW:
 			*(u64*)(to + offset) = *(u64*)(from + offset);
