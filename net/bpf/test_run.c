@@ -21,6 +21,7 @@
 #include <linux/smp.h>
 #include <linux/sock_diag.h>
 #include <net/xdp.h>
+#include <asm/irqflags.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/bpf_test_run.h>
@@ -443,30 +444,30 @@ static int bpf_test_run_xdp_live(struct bpf_prog *prog, struct xdp_buff *ctx,
 	return ret;
 }
 
-static bool __bpf_test_timer_done(struct bpf_test_timer *t, u32 repeat,
-				  int *err, u32 *duration)
-	__must_hold(rcu)
-{
-	if (signal_pending(current)) {
-		*err = -EINTR;
-		return false;
-	}
-	if (t->i >= repeat) {
-		/* We're done. */
-		t->time_spent = t->time_spent / t->i;
-		*duration = t->time_spent > U32_MAX ? U32_MAX : (u32)t->time_spent;
-		*err = 0;
-		return false;
-	} else {
-		return true;
-	}
-}
+/* static bool __bpf_test_timer_done(struct bpf_test_timer *t, u32 repeat, */
+/* 				  int *err, u32 *duration) */
+/* 	__must_hold(rcu) */
+/* { */
+/* 	if (signal_pending(current)) { */
+/* 		*err = -EINTR; */
+/* 		return false; */
+/* 	} */
+/* 	if (t->i >= repeat) { */
+/* 		/\* We're done. *\/ */
+/* 		t->time_spent = t->time_spent / t->i; */
+/* 		*duration = t->time_spent > U32_MAX ? U32_MAX : (u32)t->time_spent; */
+/* 		*err = 0; */
+/* 		return false; */
+/* 	} else { */
+/* 		return true; */
+/* 	} */
+/* } */
 
-static void __bpf_test_timer_next(struct bpf_test_timer *t)
-	__must_hold(rcu)
-{
-	t->i += 1;
-}
+/* static void __bpf_test_timer_next(struct bpf_test_timer *t) */
+/* 	__must_hold(rcu) */
+/* { */
+/* 	t->i += 1; */
+/* } */
 
 static int bpf_test_run_xdp(struct bpf_prog *prog, void *ctx, u32 repeat,
 			u32 *retval, u32 *time)
@@ -478,9 +479,10 @@ static int bpf_test_run_xdp(struct bpf_prog *prog, void *ctx, u32 repeat,
 	struct xdp_buff *xdp;
 	void *packet;
 	/* struct bpf_test_timer t = { NO_MIGRATE }; */
-	int i;
 	enum bpf_cgroup_storage_type stype;
-	int ret;
+	int ret, i;
+	long start, total = 0;
+	unsigned long flag;
 
 	BUG_ON(prog->type != BPF_PROG_TYPE_XDP && prog->type != BPF_PROG_TYPE_SOCKET_FILTER);
 	for_each_cgroup_storage_type(stype) {
@@ -510,29 +512,46 @@ static int bpf_test_run_xdp(struct bpf_prog *prog, void *ctx, u32 repeat,
 	if (!repeat)
 		repeat = 1;
 
+	local_irq_save(flag);
 	old_ctx = bpf_set_run_ctx(&run_ctx.run_ctx);
 
-	for (;__bpf_test_timer_done(&t, repeat, &ret, time);
-	     __bpf_test_timer_next(&t)) {
-		/* if (need_resched()) { */
-		/* 	cond_resched(); */
-		/* } */
+	start = rdtsc_ordered();
+	for (i = 0; i < repeat; i++) {
+#ifndef BPFBOX_COPY
+		struct bpfbox_xdp_buff *new_xdp = NULL;
+		void *pkt = NULL;
+		long maxoff;
+		maxoff = prog->max_pkt_offset;
+		pkt = xdp_setup_packet_buffer(ctx);
+		new_xdp = xdp_setup_context(ctx, pkt, maxoff);
+		start = rdtsc();
+		__bpf_prog_run(prog, bpf_box_ptr(new_xdp), BPF_DISPATCHER_FUNC(xdp));
+		total += rdtsc() - start;
+		kernel_close_bpf_scratch(sizeof(struct xdp_buff) + PAGE_SIZE);
+#else
+		total += rdtsc() - start;
 		memcpy(ctx, xdp, sizeof(struct xdp_buff));
 		memcpy(((struct xdp_buff*)ctx)->data_hard_start, packet, PAGE_SIZE);
-		bpf_test_timer_enter(&t);
+		smp_mb();
+		start = rdtsc();
+		/* bpf_test_timer_enter(&t); */
 		run_ctx.prog_item = &item;
 		*retval = bpf_prog_run_xdp(prog, ctx);
-		bpf_test_timer_leave(&t);
+		/* bpf_test_timer_leave(&t); */
+#endif
 	}
+	total += rdtsc_ordered() - start;
 	bpf_reset_run_ctx(old_ctx);
 
+	local_irq_restore(flag);
+	*time = total / repeat;
 
 	for_each_cgroup_storage_type(stype)
 		bpf_cgroup_storage_free(item.cgroup_storage[stype]);
 
+	preempt_enable();
 	kfree(packet);
 	kfree(xdp);
-	preempt_enable();
 	return ret;
 }
 
@@ -544,9 +563,11 @@ static int bpf_test_run_skb(struct bpf_prog *prog, void *ctx, u32 repeat,
 		item = {.prog = prog};
 	struct bpf_run_ctx *old_ctx;
 	struct bpf_cg_run_ctx run_ctx;
-	struct bpf_test_timer t = { NO_MIGRATE };
+	/* struct bpf_test_timer t = { NO_MIGRATE }; */
 	enum bpf_cgroup_storage_type stype;
-	int ret;
+	long start, total = 0;
+	unsigned long flag;
+	int i;
 
 	BUG_ON(prog->type != BPF_PROG_TYPE_XDP && prog->type != BPF_PROG_TYPE_SOCKET_FILTER);
 	for_each_cgroup_storage_type(stype) {
@@ -560,30 +581,25 @@ static int bpf_test_run_skb(struct bpf_prog *prog, void *ctx, u32 repeat,
 	}
 
 	preempt_disable();
-
+	local_irq_save(flag);
 	if (!repeat)
 		repeat = 1;
 
 	old_ctx = bpf_set_run_ctx(&run_ctx.run_ctx);
-	for (; (__bpf_test_timer_done(&t, repeat, &ret, time));
-	     __bpf_test_timer_next(&t)) {
-		/* if (need_resched()) { */
-		/* 	cond_resched(); */
-		/* } */
-
-		bpf_test_timer_enter(&t);
+	start = rdtsc_ordered();
+	for (i = 0; i < repeat; i++) {
 		run_ctx.prog_item = &item;
 		*retval = bpf_prog_run_skb(prog, ctx);
-		bpf_test_timer_leave(&t);
 	}
+	total = rdtsc_ordered() - start;
+	*time = total / repeat;
 	bpf_reset_run_ctx(old_ctx);
-
-
+	local_irq_restore(flag);
 	for_each_cgroup_storage_type(stype)
 		bpf_cgroup_storage_free(item.cgroup_storage[stype]);
 
 	preempt_enable();
-	return ret;
+	return 0;
 }
 
 static int bpf_test_finish(const union bpf_attr *kattr,
