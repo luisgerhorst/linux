@@ -480,7 +480,7 @@ static int bpf_test_run_xdp(struct bpf_prog *prog, void *ctx, u32 repeat,
 	void *packet;
 	/* struct bpf_test_timer t = { NO_MIGRATE }; */
 	enum bpf_cgroup_storage_type stype;
-	int ret, i;
+	int i;
 	long start, total = 0;
 	unsigned long flag;
 
@@ -517,23 +517,22 @@ static int bpf_test_run_xdp(struct bpf_prog *prog, void *ctx, u32 repeat,
 
 	start = rdtsc_ordered();
 	for (i = 0; i < repeat; i++) {
-#ifndef BPFBOX_COPY
+#ifdef CONFIG_BPFBOX_XDP_NOCOPY
 		struct bpfbox_xdp_buff *new_xdp = NULL;
 		void *pkt = NULL;
 		long maxoff;
 		maxoff = prog->max_pkt_offset;
 		pkt = xdp_setup_packet_buffer(ctx);
 		new_xdp = xdp_setup_context(ctx, pkt, maxoff);
-		start = rdtsc();
-		__bpf_prog_run(prog, bpf_box_ptr(new_xdp), BPF_DISPATCHER_FUNC(xdp));
-		total += rdtsc() - start;
+		start = rdtsc_ordered();
+		*retval = __bpf_prog_run(prog, bpf_box_ptr(new_xdp), BPF_DISPATCHER_FUNC(xdp));
+		total += rdtsc_ordered() - start;
 		kernel_close_bpf_scratch(sizeof(struct xdp_buff) + PAGE_SIZE);
 #else
-		total += rdtsc() - start;
+		total += rdtsc_ordered() - start;
 		memcpy(ctx, xdp, sizeof(struct xdp_buff));
 		memcpy(((struct xdp_buff*)ctx)->data_hard_start, packet, PAGE_SIZE);
-		smp_mb();
-		start = rdtsc();
+		start = rdtsc_ordered();
 		/* bpf_test_timer_enter(&t); */
 		run_ctx.prog_item = &item;
 		*retval = bpf_prog_run_xdp(prog, ctx);
@@ -552,7 +551,7 @@ static int bpf_test_run_xdp(struct bpf_prog *prog, void *ctx, u32 repeat,
 	preempt_enable();
 	kfree(packet);
 	kfree(xdp);
-	return ret;
+	return 0;
 }
 
 
@@ -588,10 +587,24 @@ static int bpf_test_run_skb(struct bpf_prog *prog, void *ctx, u32 repeat,
 	old_ctx = bpf_set_run_ctx(&run_ctx.run_ctx);
 	start = rdtsc_ordered();
 	for (i = 0; i < repeat; i++) {
+#ifdef CONFIG_BPFBOX_XDP_NOCOPY
+		struct sk_buff *new_skb;
+		void *packet;
+		packet = sk_filter_setup_packet_buffer(ctx);
+		new_skb = sk_filter_setup_context(ctx, packet, prog);
+		start = rdtsc_ordered();
+		new_skb->head = bpf_box_ptr(packet);
+		new_skb->data = bpf_box_ptr(packet);
+		*retval = __bpf_prog_run(prog, bpf_box_ptr(new_skb), bpf_dispatcher_nop_func);
+		kernel_close_bpf_scratch(sizeof(struct sk_buff));
+		total += rdtsc_ordered() - start;
+		sk_filter_teardown_packet_buffer(ctx);
+#else
 		run_ctx.prog_item = &item;
 		*retval = bpf_prog_run_skb(prog, ctx);
+#endif
 	}
-	total = rdtsc_ordered() - start;
+	total += rdtsc_ordered() - start;
 	*time = total / repeat;
 	bpf_reset_run_ctx(old_ctx);
 	local_irq_restore(flag);

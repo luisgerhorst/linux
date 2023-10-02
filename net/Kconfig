@@ -471,4 +471,12 @@ config NETDEV_ADDR_LIST_TEST
 	default KUNIT_ALL_TESTS
 	depends on KUNIT
 
+config BPFBOX_XDP_NOCOPY
+	bool "Enable no copy for BPFBOX (testing performance only)"
+	depends on BPF_SYSCALL
+	default y
+	help
+	  In testing the performance of BPF-Box, this option will simulate the 
+	  situation where the NIC's ring buffer is placed inside the BOX region
+
 endif   # if NET
