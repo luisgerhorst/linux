@@ -588,17 +588,9 @@ static int bpf_test_run_skb(struct bpf_prog *prog, void *ctx, u32 repeat,
 	start = rdtsc_ordered();
 	for (i = 0; i < repeat; i++) {
 #ifdef CONFIG_BPFBOX_XDP_NOCOPY
-		struct sk_buff *new_skb;
-		void *packet;
-		packet = sk_filter_setup_packet_buffer(ctx);
-		new_skb = sk_filter_setup_context(ctx, packet, prog);
 		start = rdtsc_ordered();
-		new_skb->head = bpf_box_ptr(packet);
-		new_skb->data = bpf_box_ptr(packet);
-		*retval = __bpf_prog_run(prog, bpf_box_ptr(new_skb), bpf_dispatcher_nop_func);
-		kernel_close_bpf_scratch(sizeof(struct sk_buff));
+		*retval = __bpf_prog_run(prog, ctx, bpf_dispatcher_nop_func);
 		total += rdtsc_ordered() - start;
-		sk_filter_teardown_packet_buffer(ctx);
 #else
 		run_ctx.prog_item = &item;
 		*retval = bpf_prog_run_skb(prog, ctx);

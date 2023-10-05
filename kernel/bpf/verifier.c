@@ -14044,7 +14044,6 @@ static int do_misc_fixups(struct bpf_verifier_env *env)
 				}
 				prog->max_pkt_offset = max(prog->max_pkt_offset,
 							(unsigned int)cur);
-				
 			}
 			if (cnt == 0 || cnt >= ARRAY_SIZE(insn_buf)) {
 				verbose(env, "bpf verifier is misconfigured\n");
@@ -14073,6 +14072,9 @@ static int do_misc_fixups(struct bpf_verifier_env *env)
 				BPF_ST_BOXMEM(),
 				*insn,
 			};
+			if (prog->type == BPF_PROG_TYPE_SOCKET_FILTER &&
+			    env->insn_aux_data[i + delta].ptr_type == PTR_TO_CTX)
+				continue;
 
 			cnt = ARRAY_SIZE(patch);
 			new_prog = bpf_patch_insn_data(env, i + delta, patch, cnt);
