@@ -218,7 +218,7 @@ BPF_CALL_4(bpfbox_skb_load_helper_8, const struct sk_buff *, skb, const void __b
 	const int len = sizeof(tmp);
 
 	if (offset >= 0) {
-		if (bpf_unbox_ptr(skb)->end - offset >= len)
+		if (headlen - offset >= len)
 			return *(u8 *)(bpf_unbox_ptr(data) + offset);
 		else
 			BUG();
@@ -276,7 +276,7 @@ BPF_CALL_4(bpfbox_skb_load_helper_16, const struct sk_buff *, skb, const void __
 	const int len = sizeof(tmp);
 
 	if (offset >= 0) {
-		if (bpf_unbox_ptr(skb)->end - offset >= len)
+		if (headlen - offset >= len)
 			return get_unaligned_be16(bpf_unbox_ptr(data) + offset);
 		else
 			BUG();

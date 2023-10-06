@@ -589,7 +589,7 @@ static int bpf_test_run_skb(struct bpf_prog *prog, void *ctx, u32 repeat,
 	for (i = 0; i < repeat; i++) {
 #ifdef CONFIG_BPFBOX_XDP_NOCOPY
 		start = rdtsc_ordered();
-		*retval = __bpf_prog_run(prog, ctx, bpf_dispatcher_nop_func);
+		*retval = bpf_prog_run(prog, ctx);
 		total += rdtsc_ordered() - start;
 #else
 		run_ctx.prog_item = &item;

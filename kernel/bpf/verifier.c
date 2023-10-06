@@ -14072,9 +14072,11 @@ static int do_misc_fixups(struct bpf_verifier_env *env)
 				BPF_ST_BOXMEM(),
 				*insn,
 			};
+#ifdef CONFIG_BPFBOX_XDP_NOCOPY
 			if (prog->type == BPF_PROG_TYPE_SOCKET_FILTER &&
 			    env->insn_aux_data[i + delta].ptr_type == PTR_TO_CTX)
 				continue;
+#endif
 
 			cnt = ARRAY_SIZE(patch);
 			new_prog = bpf_patch_insn_data(env, i + delta, patch, cnt);
