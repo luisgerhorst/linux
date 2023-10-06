@@ -260,8 +260,8 @@ BPF_CALL_2(bpf_skb_load_helper_8_no_cache, const struct sk_buff *, _skb,
 	const struct sk_buff *skb;
 	if (((unsigned long) _skb) >> 32) {
 		skb = _skb;
-		return ____bpf_skb_load_helper_8(skb, bpf_unbox_ptr(skb)->data,
-						bpf_unbox_ptr(skb)->len - bpf_unbox_ptr(skb)->data_len, offset);
+		return ____bpf_skb_load_helper_8(skb, skb->data,
+						skb->len - skb->data_len, offset);
 	} else {
 		skb = bpf_unbox_ptr(_skb);
 		return ____bpfbox_skb_load_helper_8(skb, (void __bpfbox *)skb->data,
@@ -380,8 +380,8 @@ BPF_CALL_2(bpf_skb_load_helper_32_no_cache, const struct sk_buff *, _skb,
 						skb->len - skb->data_len, offset);
 	} else {
 		skb = bpf_unbox_ptr(_skb);
-		return ____bpfbox_skb_load_helper_32(skb, bpf_unbox_ptr(skb)->data,
-						bpf_unbox_ptr(skb)->len - bpf_unbox_ptr(skb)->data_len, offset);
+		return ____bpfbox_skb_load_helper_32(skb, skb->data,
+						skb->len - skb->data_len, offset);
 	}
 }
 
