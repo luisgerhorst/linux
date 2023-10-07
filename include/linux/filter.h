@@ -812,24 +812,22 @@ static inline u32 __bpf_prog_run_save_cb(const struct bpf_prog *prog,
 	const struct sk_buff *skb = ctx;
 	u8 *cb_data = bpf_skb_cb(skb);
 	u8 cb_saved[BPF_SKB_CB_LEN];
-	u32 size = min(skb->len, prog->max_pkt_offset);
+	/* u32 size = min(skb->len, prog->max_pkt_offset); */
 	u32 res;
-	struct sk_buff __bpfbox *dup_context = kernel_open_bpf_scratch(sizeof(struct sk_buff));
-	void __bpfbox *dup_packet = kernel_open_bpf_scratch(size);
+	/* struct sk_buff __bpfbox *dup_context = kernel_open_bpf_scratch(sizeof(struct sk_buff)); */
+	/* void __bpfbox *dup_packet = kernel_open_bpf_scratch(size); */
 
-	/* memcpy(bpf_unbox_ptr(dup_packet), skb->data, size); */
-	bpf_ctx_copy(prog, bpf_unbox_ptr(dup_context), ctx, sizeof(struct sk_buff));
-	/* memcpy(bpf_unbox_ptr(dup_context), skb, sizeof(struct sk_buff)); */
-	bpf_unbox_ptr(dup_context)->data = (void *)(unsigned long)dup_packet;
+	/* bpf_ctx_copy(prog, bpf_unbox_ptr(dup_context), ctx, sizeof(struct sk_buff)); */
+	/* bpf_unbox_ptr(dup_context)->data = (void *)(unsigned long)dup_packet; */
 	if (unlikely(prog->cb_access)) {
 		memcpy(cb_saved, cb_data, sizeof(cb_saved));
 		memset(cb_data, 0, sizeof(cb_saved));
 	}
 
-	res = bpf_prog_run(prog, dup_context);
+	res = bpf_prog_run(prog, ctx);
 
-	kernel_close_bpf_scratch(size);
-	kernel_close_bpf_scratch(sizeof(struct sk_buff));
+	/* kernel_close_bpf_scratch(size); */
+	/* kernel_close_bpf_scratch(sizeof(struct sk_buff)); */
 	if (unlikely(prog->cb_access))
 		memcpy(cb_data, cb_saved, sizeof(cb_saved));
 

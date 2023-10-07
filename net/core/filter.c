@@ -628,13 +628,13 @@ static bool convert_bpf_ld_abs(struct sock_filter *fp, struct bpf_insn **insnp)
 
 	switch (BPF_SIZE(fp->code)) {
 	case BPF_B:
-		*insn++ = BPF_EMIT_CALL(bpfbox_skb_load_helper_8);
+		*insn++ = BPF_EMIT_CALL(bpf_skb_load_helper_8);
 		break;
 	case BPF_H:
-		*insn++ = BPF_EMIT_CALL(bpfbox_skb_load_helper_16);
+		*insn++ = BPF_EMIT_CALL(bpf_skb_load_helper_16);
 		break;
 	case BPF_W:
-		*insn++ = BPF_EMIT_CALL(bpfbox_skb_load_helper_32);
+		*insn++ = BPF_EMIT_CALL(bpf_skb_load_helper_32);
 		break;
 	default:
 		return false;
@@ -1011,7 +1011,7 @@ jmp_rest:
 		/* Only calculating new length. */
 		*new_len = new_insn - first_insn;
 		if (*seen_ld_abs)
-			*new_len += 7; /* Prologue bits. */
+			*new_len += 4; /* Prologue bits. */
 		return 0;
 	}
 
