@@ -419,7 +419,7 @@ static u32 seccomp_run_filters(const struct seccomp_data *sd,
 	 * value always takes priority (ignoring the DATA).
 	 */
 	for (; f; f = f->prev) {
-		u32 cur_ret = bpf_prog_run_pin_on_cpu(f->prog, sd);
+		u32 cur_ret = bpf_prog_run_pin_on_cpu(f->prog, bpf_box_ptr((void *)sd));
 
 		if (ACTION_ONLY(cur_ret) < ACTION_ONLY(ret)) {
 			ret = cur_ret;

@@ -676,22 +676,22 @@ static inline u32 bpf_prog_run_pin_on_cpu(const struct bpf_prog *prog,
 {
 	u32 ret;
 
-	const struct sk_buff *skb = ctx;
-	u32 size = min(skb->len, prog->max_pkt_offset);
-	struct sk_buff __bpfbox *dup_context;
-	void __bpfbox *dup_packet;
+	/* const struct sk_buff *skb = ctx; */
+	/* u32 size = min(skb->len, prog->max_pkt_offset); */
+	/* struct sk_buff __bpfbox *dup_context; */
+	/* void __bpfbox *dup_packet; */
 
 	migrate_disable();
-	dup_context = kernel_open_bpf_scratch(sizeof(struct sk_buff));
-	dup_packet = kernel_open_bpf_scratch(size);
-	memcpy(bpf_unbox_ptr(dup_packet), skb->data, size);
-	memcpy(bpf_unbox_ptr(dup_context), skb, sizeof(struct sk_buff));
-	bpf_unbox_ptr(dup_context)->data = (void *)(unsigned long)dup_packet;
+	/* dup_context = kernel_open_bpf_scratch(sizeof(struct sk_buff)); */
+	/* dup_packet = kernel_open_bpf_scratch(size); */
+	/* memcpy(bpf_unbox_ptr(dup_packet), skb->data, size); */
+	/* memcpy(bpf_unbox_ptr(dup_context), skb, sizeof(struct sk_buff)); */
+	/* bpf_unbox_ptr(dup_context)->data = (void *)(unsigned long)dup_packet; */
 
-	ret = bpf_prog_run(prog, dup_context);
+	ret = bpf_prog_run(prog, ctx);
 
-	kernel_close_bpf_scratch(size);
-	kernel_close_bpf_scratch(sizeof(struct sk_buff));
+	/* kernel_close_bpf_scratch(size); */
+	/* kernel_close_bpf_scratch(sizeof(struct sk_buff)); */
 
 	migrate_enable();
 	return ret;
