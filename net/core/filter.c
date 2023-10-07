@@ -472,7 +472,6 @@ static bool convert_bpf_extensions(struct bpf_prog *prog, struct sock_filter *fp
 		BUILD_BUG_ON(sizeof_field(struct net_device, type) != 2);
 
 		BUG();
-		*insn++ = BPF_ST_BOXMEM();
 		*insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct sk_buff, dev),
 				      BPF_REG_TMP, BPF_REG_CTX,
 				      offsetof(struct sk_buff, dev));
@@ -480,11 +479,9 @@ static bool convert_bpf_extensions(struct bpf_prog *prog, struct sock_filter *fp
 		*insn++ = BPF_JMP_IMM(BPF_JNE, BPF_REG_TMP, 0, 1);
 		*insn++ = BPF_EXIT_INSN();
 		if (fp->k == SKF_AD_OFF + SKF_AD_IFINDEX) {
-			*insn++ = BPF_ST_BOXMEM();
 			*insn = BPF_LDX_MEM(BPF_W, BPF_REG_A, BPF_REG_TMP,
 					    offsetof(struct net_device, ifindex));
 		} else {
-			*insn++ = BPF_ST_BOXMEM();
 			*insn = BPF_LDX_MEM(BPF_H, BPF_REG_A, BPF_REG_TMP,
 					    offsetof(struct net_device, type));
 		}
@@ -498,7 +495,6 @@ static bool convert_bpf_extensions(struct bpf_prog *prog, struct sock_filter *fp
 	case SKF_AD_OFF + SKF_AD_RXHASH:
 		BUILD_BUG_ON(sizeof_field(struct sk_buff, hash) != 4);
 
-		*insn++ = BPF_ST_BOXMEM();
 		*insn = BPF_LDX_MEM(BPF_W, BPF_REG_A, BPF_REG_CTX,
 				    offsetof(struct sk_buff, hash));
 		bpf_record_ctx_access(prog, offsetof(struct sk_buff, hash), BPF_W);
@@ -525,7 +521,6 @@ static bool convert_bpf_extensions(struct bpf_prog *prog, struct sock_filter *fp
 		BUILD_BUG_ON(sizeof_field(struct sk_buff, vlan_proto) != 2);
 
 		/* A = *(u16 *) (CTX + offsetof(vlan_proto)) */
-		*insn++ = BPF_ST_BOXMEM();
 		*insn++ = BPF_LDX_MEM(BPF_H, BPF_REG_A, BPF_REG_CTX,
 				      offsetof(struct sk_buff, vlan_proto));
 		/* A = ntohs(A) [emitting a nop or swap16] */
@@ -607,13 +602,11 @@ static bool convert_bpf_ld_abs(struct sock_filter *fp, struct bpf_insn **insnp)
 		*insn++ = BPF_JMP_IMM(BPF_JSLT, BPF_REG_TMP,
 				      size, 3 + endian + (!ldx_off_ok * 2));
 		if (ldx_off_ok) {
-			*insn++ = BPF_ST_BOXMEM();
 			*insn++ = BPF_LDX_MEM(BPF_SIZE(fp->code), BPF_REG_A,
 					      BPF_REG_D, offset);
 		} else {
 			*insn++ = BPF_MOV64_REG(BPF_REG_TMP, BPF_REG_D);
 			*insn++ = BPF_ALU64_IMM(BPF_ADD, BPF_REG_TMP, offset);
-			*insn++ = BPF_ST_BOXMEM();
 			*insn++ = BPF_LDX_MEM(BPF_SIZE(fp->code), BPF_REG_A,
 					      BPF_REG_TMP, 0);
 		}
@@ -721,14 +714,11 @@ do_pass:
 			 * (headlen) in BPF R9. Since classic BPF is read-only
 			 * on CTX, we only need to cache it once.
 			 */
-			*new_insn++ = BPF_ST_BOXMEM();
 			*new_insn++ = BPF_LDX_MEM(BPF_FIELD_SIZEOF(struct sk_buff, data),
 						  BPF_REG_D, BPF_REG_CTX,
 						  offsetof(struct sk_buff, data));
-			*new_insn++ = BPF_ST_BOXMEM();
 			*new_insn++ = BPF_LDX_MEM(BPF_W, BPF_REG_H, BPF_REG_CTX,
 						  offsetof(struct sk_buff, len));
-			*new_insn++ = BPF_ST_BOXMEM();
 			*new_insn++ = BPF_LDX_MEM(BPF_W, BPF_REG_TMP, BPF_REG_CTX,
 						  offsetof(struct sk_buff, data_len));
 			*new_insn++ = BPF_ALU32_REG(BPF_SUB, BPF_REG_H, BPF_REG_TMP);
