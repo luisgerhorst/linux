@@ -394,14 +394,12 @@ static u32 convert_skb_access(struct bpf_prog *prog, int skb_field, int dst_reg,
 	case SKF_AD_MARK:
 		BUILD_BUG_ON(sizeof_field(struct sk_buff, mark) != 4);
 
-		*insn++ = BPF_ST_BOXMEM();
 		*insn++ = BPF_LDX_MEM(BPF_W, dst_reg, src_reg,
 				      offsetof(struct sk_buff, mark));
 		bpf_record_ctx_access(prog, offsetof(struct sk_buff, mark), BPF_W);
 		break;
 
 	case SKF_AD_PKTTYPE:
-		*insn++ = BPF_ST_BOXMEM();
 		*insn++ = BPF_LDX_MEM(BPF_B, dst_reg, src_reg, PKT_TYPE_OFFSET);
 		*insn++ = BPF_ALU32_IMM(BPF_AND, dst_reg, PKT_TYPE_MAX);
 #ifdef __BIG_ENDIAN_BITFIELD
@@ -413,7 +411,6 @@ static u32 convert_skb_access(struct bpf_prog *prog, int skb_field, int dst_reg,
 	case SKF_AD_QUEUE:
 		BUILD_BUG_ON(sizeof_field(struct sk_buff, queue_mapping) != 2);
 
-		*insn++ = BPF_ST_BOXMEM();
 		*insn++ = BPF_LDX_MEM(BPF_H, dst_reg, src_reg,
 				      offsetof(struct sk_buff, queue_mapping));
 		bpf_record_ctx_access(prog, offsetof(struct sk_buff, queue_mapping), BPF_H);
@@ -422,14 +419,12 @@ static u32 convert_skb_access(struct bpf_prog *prog, int skb_field, int dst_reg,
 	case SKF_AD_VLAN_TAG:
 		BUILD_BUG_ON(sizeof_field(struct sk_buff, vlan_tci) != 2);
 
-		*insn++ = BPF_ST_BOXMEM();
 		/* dst_reg = *(u16 *) (src_reg + offsetof(vlan_tci)) */
 		*insn++ = BPF_LDX_MEM(BPF_H, dst_reg, src_reg,
 				      offsetof(struct sk_buff, vlan_tci));
 		bpf_record_ctx_access(prog, offsetof(struct sk_buff, vlan_tci), BPF_H);
 		break;
 	case SKF_AD_VLAN_TAG_PRESENT:
-		*insn++ = BPF_ST_BOXMEM();
 		*insn++ = BPF_LDX_MEM(BPF_B, dst_reg, src_reg, PKT_VLAN_PRESENT_OFFSET);
 		if (PKT_VLAN_PRESENT_BIT)
 			*insn++ = BPF_ALU32_IMM(BPF_RSH, dst_reg, PKT_VLAN_PRESENT_BIT);
@@ -452,7 +447,6 @@ static bool convert_bpf_extensions(struct bpf_prog *prog, struct sock_filter *fp
 	case SKF_AD_OFF + SKF_AD_PROTOCOL:
 		BUILD_BUG_ON(sizeof_field(struct sk_buff, protocol) != 2);
 
-		*insn++ = BPF_ST_BOXMEM();
 		/* A = *(u16 *) (CTX + offsetof(protocol)) */
 		*insn++ = BPF_LDX_MEM(BPF_H, BPF_REG_A, BPF_REG_CTX,
 				      offsetof(struct sk_buff, protocol));
@@ -775,8 +769,9 @@ do_pass:
 			 */
 			if (BPF_CLASS(fp->code) == BPF_LD &&
 			    BPF_MODE(fp->code) == BPF_ABS &&
-			    convert_bpf_extensions(new_prog, fp, &insn))
+			    convert_bpf_extensions(new_prog, fp, &insn)) {
 				break;
+			}
 			if (BPF_CLASS(fp->code) == BPF_LD &&
 				convert_bpf_ld_abs(fp, &insn)) {
 				*seen_ld_abs = true;
@@ -979,7 +974,6 @@ jmp_rest:
 		/* A = skb->len or X = skb->len */
 		case BPF_LD | BPF_W | BPF_LEN:
 		case BPF_LDX | BPF_W | BPF_LEN:
-			*insn++ = BPF_ST_BOXMEM();
 			*insn = BPF_LDX_MEM(BPF_W, BPF_CLASS(fp->code) == BPF_LD ?
 					    BPF_REG_A : BPF_REG_X, BPF_REG_CTX,
 					    offsetof(struct sk_buff, len));
