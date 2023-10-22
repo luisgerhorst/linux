@@ -7,6 +7,7 @@
 
 
 register unsigned long base asm ("r12");
+register unsigned long bpfstack asm ("r13");
 #undef unbox
 #undef box
 

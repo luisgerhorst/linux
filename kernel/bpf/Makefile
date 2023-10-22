@@ -1,11 +1,22 @@
 # SPDX-License-Identifier: GPL-2.0
 obj-y := core.o bpfbox.o boxed_helpers.o
+
+clean-files := boxed_helpers.s boxed_helpers.tmp.s
+
+# TODO: Fix the echo stuff
+$(obj)/boxed_helpers.o: $(obj)/boxed_helpers.s $(src)/transform
+	$(src)/transform < $(obj)/boxed_helpers.s > $(obj)/boxed_helpers.tmp.s
+	$(CC) -o $@ -c $(obj)/boxed_helpers.tmp.s
+
+CFLAGS_boxed_helpers.s += -S
+$(obj)/boxed_helpers.s: $(src)/boxed_helpers.c
+
+
 ifneq ($(CONFIG_BPF_JIT_ALWAYS_ON),y)
 # ___bpf_prog_run() needs GCSE disabled on x86; see 3193c0836f203 for details
 cflags-nogcse-$(CONFIG_X86)$(CONFIG_CC_IS_GCC) := -fno-gcse
 endif
 CFLAGS_core.o += $(call cc-disable-warning, override-init) $(cflags-nogcse-yy)
-#CFLAGS_boxed_helpers.o += -ffixed-r12
 
 obj-$(CONFIG_BPF_SYSCALL) += syscall.o verifier.o inode.o helpers.o tnum.o bpf_iter.o map_iter.o task_iter.o prog_iter.o link_iter.o
 obj-$(CONFIG_BPF_SYSCALL) += hashtab.o arraymap.o percpu_freelist.o bpf_lru_list.o lpm_trie.o map_in_map.o bloom_filter.o
