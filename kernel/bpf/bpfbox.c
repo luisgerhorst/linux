@@ -58,7 +58,7 @@ int __init init_bpfbox_stack(void)
 		long size = BPF_SCRATCH_SIZE_PAGE * PAGE_SIZE;
 		region->start = bpfbox_alloc(size) - BPFBOX_START;
 		region->size = size;
-		local_set(&region->sp, (unsigned long)region->start);
+		local_set(&region->sp, (unsigned long)region->start + size - PAGE_SIZE);
 	}
 	return 0;
 }

@@ -126,10 +126,10 @@ static const int reg2hex[] = {
 	[BPF_REG_4] = 1,  /* RCX */
 	[BPF_REG_5] = 0,  /* R8  */
 	[BPF_REG_6] = 3,  /* RBX callee saved */
-	[BPF_REG_7] = 5,  /* R13 callee saved */
+	[BPF_REG_7] = 5,  /* RBP callee saved */ /* changed by bpfbox */
 	[BPF_REG_8] = 6,  /* R14 callee saved */
 	[BPF_REG_9] = 7,  /* R15 callee saved */
-	[BPF_REG_FP] = 5, /* RBP readonly */
+	[BPF_REG_FP] = 5, /* R13 readonly */     /* changed by bpfbox */
 	[BPF_REG_AX] = 2, /* R10 temp register */
 	[AUX_REG] = 3,    /* R11 temp register */
 	[X86_REG_R9] = 1, /* R9 register, 6th function argument */
@@ -157,7 +157,7 @@ static bool is_ereg(u32 reg)
 {
 	return (1 << reg) & (BIT(BPF_REG_5) |
 			     BIT(AUX_REG) |
-			     BIT(BPF_REG_7) |
+			     BIT(BPF_REG_FP) |
 			     BIT(BPF_REG_8) |
 			     BIT(BPF_REG_9) |
 			     BIT(X86_REG_R9) |
@@ -174,7 +174,7 @@ static bool is_ereg_8l(u32 reg)
 	return is_ereg(reg) ||
 	    (1 << reg) & (BIT(BPF_REG_1) |
 			  BIT(BPF_REG_2) |
-			  BIT(BPF_REG_FP));
+			  BIT(BPF_REG_7));
 }
 
 static bool is_axreg(u32 reg)
@@ -278,7 +278,7 @@ static void push_callee_regs(u8 **pprog, bool *callee_regs_used)
 	if (callee_regs_used[0])
 		EMIT1(0x53);         /* push rbx */
 	if (callee_regs_used[1])
-		EMIT2(0x41, 0x55);   /* push r13 */
+		EMIT1(0x55);   /* push rbp */ /* changed by bpfbox */
 	if (callee_regs_used[2])
 		EMIT2(0x41, 0x56);   /* push r14 */
 	if (callee_regs_used[3])
@@ -295,7 +295,7 @@ static void pop_callee_regs(u8 **pprog, bool *callee_regs_used)
 	if (callee_regs_used[2])
 		EMIT2(0x41, 0x5E);   /* pop r14 */
 	if (callee_regs_used[1])
-		EMIT2(0x41, 0x5D);   /* pop r13 */
+		EMIT1(0x5D);   /* pop rbp */ /* changed by bpfbox */
 	if (callee_regs_used[0])
 		EMIT1(0x5B);         /* pop rbx */
 	*pprog = prog;
@@ -323,8 +323,9 @@ static void emit_prologue(u8 **pprog, u32 stack_depth, bool ebpf_from_cbpf,
 		else
 			EMIT2(0x66, 0x90); /* nop2 */
 	}
-	EMIT1(0x55);             /* push rbp */
-	EMIT3(0x48, 0x89, 0xE5); /* mov rbp, rsp */
+	/* EMIT1(0x55);             /\* push rbp *\/ */
+	/* EMIT3(0x48, 0x89, 0xE5); /\* mov rbp, rsp *\/ */
+	EMIT2(0x41, 0x55); /* push r13 */
 
 	/* X86_TAIL_CALL_OFFSET is here */
 	EMIT_ENDBR();
@@ -364,6 +365,26 @@ static int emit_patch(u8 **pprog, void *func, void *ip, u8 opcode)
 	return 0;
 }
 
+static int emit_call_boxed(u8 **pprog, void *func, void *ip, u32 stack_size)
+{
+	u8 *prog = *pprog;
+	u8 opcode = 0xE8;
+	s64 offset;
+
+	/* sub r13, stack_size */
+	EMIT3_off32(0x49, 0x81, 0xED, stack_size);
+	offset = func - (ip + X86_PATCH_SIZE + 7);
+	if (!is_simm32(offset)) {
+		pr_err("Target call %p is out of range\n", func);
+		return -ERANGE;
+	}
+	EMIT1_off32(opcode, offset);
+	/* add r13, stack_size */
+	EMIT3_off32(0x49, 0x81, 0xC5, stack_size);
+	*pprog = prog;
+	return 0;
+}
+
 static int emit_call(u8 **pprog, void *func, void *ip)
 {
 	return emit_patch(pprog, func, ip, 0xE8);
@@ -381,7 +402,7 @@ static int emit_open_scratch(u8 **pprog, u32 stack_depth, void *ip, bool tail_ca
 	if (stack_depth) {
 		/* mov esi, $stack_depth */
 		EMIT1(0xBE);
-		EMIT(round_up(stack_depth, 8), 4);
+		EMIT(-round_up(stack_depth, 8), 4);
 
 		/* mov edx, &bpfbox_scratch_region */
 		EMIT1(0xBA);
@@ -391,16 +412,14 @@ static int emit_open_scratch(u8 **pprog, u32 stack_depth, void *ip, bool tail_ca
 		EMIT4(0x65, 0x48, 0x03, 0x15);
 		EMIT((int)((void *)(&this_cpu_off) - (ip + 18)), 4);
 
-		/* mov ebp, esi */
-		EMIT2(0x89, 0xf5);
+		/* mov r13d, esi */
+		EMIT3(0x41, 0x89, 0xf5);
 
-		/* xadd dword ptr [rcx + offsetof(region->sp)], ebp */
-		EMIT3(0x0F, 0xC1, 0x6A);
+		/* xadd dword ptr [rdx + offsetof(region->sp)], r13d */
+		EMIT4(0x44, 0x0F, 0xC1, 0x6A);
 		BUG_ON(offsetof(struct bpfbox_scratch_region, sp) > 128);
 		EMIT1(offsetof(struct bpfbox_scratch_region, sp));
 
-		/* add ebp, esi */
-		EMIT2(0x01, 0xf5);
 	}
 
 	*pprog = prog;
@@ -414,7 +433,7 @@ static void emit_close_scratch(u8 **pprog, u32 stack_depth, void *ip, bool doing
 	if (stack_depth) {
 		/* mov esi, $stack_depth */
 		EMIT1(0xBE);
-		EMIT(round_up(stack_depth, 8), 4);
+		EMIT(-round_up(stack_depth, 8), 4);
 
 		/* mov edx, &bpfbox_scratch_region */
 		EMIT1(0xBA);
@@ -1650,10 +1669,10 @@ st:
 				/* mov rax, qword ptr [rbp - rounded_stack_depth - 8] */
 				EMIT3_off32(0x48, 0x8B, 0x85,
 					    -round_up(bpf_prog->aux->stack_depth, 8) - 8);
-				if (!imm32 || emit_call(&prog, func, image + addrs[i - 1] + 7))
+				if (!imm32 || emit_call_boxed(&prog, func, image + addrs[i - 1] + 7, bpf_prog->aux->stack_depth))
 					return -EINVAL;
 			} else {
-				if (!imm32 || emit_call(&prog, func, image + addrs[i - 1]))
+				if (!imm32 || emit_call_boxed(&prog, func, image + addrs[i - 1], bpf_prog->aux->stack_depth))
 					return -EINVAL;
 			}
 			break;
@@ -1915,7 +1934,7 @@ emit_jmp:
 					image + addrs[i - 1] + (prog - temp), false);
 			pop_callee_regs(&prog, callee_regs_used);
 			EMIT2(0x41, 0x5C);   /* pop r12 */
-			EMIT1(0x5D);	/* pop rbp */
+			EMIT2(0x41, 0x5D);   /* pop r13 */
 			emit_return(&prog, image + addrs[i - 1] + (prog - temp));
 			break;
 

@@ -615,7 +615,7 @@ static __always_inline u32 __bpf_prog_run(const struct bpf_prog *prog,
 static inline void *sk_filter_setup_packet_buffer(struct sk_buff *skb)
 {
 	int size = skb->end + SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
-	void *packet = bpf_unbox_ptr(kernel_open_bpf_scratch(size) - size);
+	void *packet = bpf_unbox_ptr(kernel_open_bpf_scratch(size));
 	return packet;
 }
 
@@ -635,8 +635,7 @@ static inline void sk_filter_reset_context(struct sk_buff *to, struct sk_buff *f
 static inline struct sk_buff *sk_filter_setup_context(struct sk_buff *from, void *packet,
 					const struct bpf_prog *prog)
 {
-	struct sk_buff *to = bpf_unbox_ptr(kernel_open_bpf_scratch(sizeof(struct sk_buff))
-					- sizeof(struct sk_buff));
+	struct sk_buff *to = bpf_unbox_ptr(kernel_open_bpf_scratch(sizeof(struct sk_buff)));
 	sk_filter_reset_context(to, from, packet, prog);
 	return to;
 }
@@ -867,7 +866,7 @@ u32 xdp_master_redirect(struct xdp_buff *xdp);
 
 static void *xdp_setup_packet_buffer(struct xdp_buff *xdp)
 {
-	void *packet = bpf_unbox_ptr(kernel_open_bpf_scratch(PAGE_SIZE)) - PAGE_SIZE;
+	void *packet = bpf_unbox_ptr(kernel_open_bpf_scratch(PAGE_SIZE));
 	return packet;
 }
 
@@ -885,8 +884,7 @@ static void xdp_reset_context(struct bpfbox_xdp_buff *to, struct xdp_buff *from,
 
 static struct bpfbox_xdp_buff *xdp_setup_context(struct xdp_buff *from, void *packet, long maxoff)
 {
-	struct bpfbox_xdp_buff *to = bpf_unbox_ptr(kernel_open_bpf_scratch(sizeof(struct xdp_buff)) \
-						- sizeof(struct xdp_buff));
+	struct bpfbox_xdp_buff *to = bpf_unbox_ptr(kernel_open_bpf_scratch(sizeof(struct xdp_buff)));
 	xdp_reset_context(to, from, packet, maxoff);
 	return to;
 }

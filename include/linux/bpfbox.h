@@ -93,13 +93,14 @@ static inline void __bpfbox *kernel_open_bpf_scratch(int size)
 	struct bpfbox_scratch_region *region;
 	long cur;
 	region = raw_cpu_ptr(&bpfbox_scratch_region);
-	cur = local_add_return(size, &region->sp);
+	cur = local_sub_return(size, &region->sp);
 	return (void __bpfbox *)cur;
 }
+
 static inline void kernel_close_bpf_scratch(int size)
 {
 	struct bpfbox_scratch_region *region = this_cpu_ptr(&bpfbox_scratch_region);
-	local_sub(size, &region->sp);
+	local_add(size, &region->sp);
 }
 
 #endif

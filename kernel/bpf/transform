@@ -1,5 +1,74 @@
 #!/usr/bin/python3
 import sys
 
+def has_rsp(l):
+    return 'rsp' in l
+
+def emit_sfi(l):
+    print('\tmovl\t%r13d, %r13d')
+    print(l.replace('(%rsp)', '(%r12, %r13, 1)'))
+
+def emit_push_block(block):
+    print('\tsubl\t${}, %r13d'.format(sum([e[0] for e in block])))
+    cur = 0
+    for size, reg in reversed(block):
+        insn = '\t'
+        if size == 8:
+            insn += 'movq\t'
+        else:
+            insn += 'movl\t'
+        insn += reg
+        insn += ', {}(%r12, %r13, 1)'.format(cur)
+        cur += size
+        print(insn)
+
+def emit_pop_block(block):
+    cur = 0
+    print('\tmovl\t%r13d, %r13d')
+    for size, reg in block:
+        insn = '\t'
+        if size == 8:
+            insn += 'movq\t'
+        else:
+            insn += 'movl\t'
+        insn += '{}(%r12, %r13, 1), '.format(cur)
+        insn += reg
+        cur += size
+        print(insn)
+    print('\taddl\t${}, %r13d'.format(sum([e[0] for e in block])))
+    
 a = sys.stdin.read()
-sys.stdout.write(a)
+in_push_block = False
+in_pop_block = False
+block = []
+for l in a.split('\n'):
+    if (not 'pushq' in l and not 'pushl' in l and in_push_block):
+        in_push_block = False
+        emit_push_block(block)
+        block = []
+    if (not 'popq' in l and not 'popl' in l and in_pop_block):
+        in_pop_block = False
+        emit_pop_block(block)
+        block = []
+    if 'pushq' in l or 'pushl' in l:
+        size = 8 if ('pushq' in l) else 4
+        reg = l.split()[1]
+        block.append((size, reg))
+        in_push_block = True
+        continue
+    if 'popq' in l or 'popl' in l:
+        size = 8 if ('popq' in l) else 4
+        reg = l.split()[1]
+        block.append((size, reg))
+        in_pop_block = True
+        continue
+    if has_rsp(l):
+        if (not 'leal' in l and not 'leaq' in l
+            and '(%rsp)' in l):
+            emit_sfi(l)
+        else:
+            print(l.replace('%rsp', '%r13'))
+    else:
+        print(l)
+
+# sys.stdout.write(a)
