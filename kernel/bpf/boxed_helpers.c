@@ -885,7 +885,7 @@ void __bpfbox *__htab_map_lookup_elem(struct bpf_map_inner __bpfbox *map_inner,
 
 static int htab_lock_bucket(const struct bpf_htab_inner __bpfbox *inner,
 			    struct bucket __bpfbox *b, u32 hash,
-			    unsigned long *pflags)
+			    unsigned long __bpfbox *pflags)
 {
 	unsigned long flags;
 	int cpu;
@@ -908,7 +908,7 @@ static int htab_lock_bucket(const struct bpf_htab_inner __bpfbox *inner,
 	}
 
 	raw_spin_lock_irqsave(unsafe_unbox(&b->raw_lock), flags);
-	*pflags = flags;
+	*unbox(pflags) = flags;
 
 	return 0;
 }
