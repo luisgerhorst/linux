@@ -5,8 +5,8 @@ clean-files := boxed_helpers.s boxed_helpers.tmp.s
 
 # TODO: Fix the echo stuff
 $(obj)/boxed_helpers.o: $(obj)/boxed_helpers.s $(src)/transform
-	$(src)/transform < $(obj)/boxed_helpers.s > $(obj)/boxed_helpers.tmp.s
-	$(CC) -o $@ -c $(obj)/boxed_helpers.tmp.s
+	@$(src)/transform < $(obj)/boxed_helpers.s > $(obj)/boxed_helpers.tmp.s
+	@$(CC) -o $@ -c $(obj)/boxed_helpers.tmp.s
 
 CFLAGS_boxed_helpers.s += -S
 $(obj)/boxed_helpers.s: $(src)/boxed_helpers.c
