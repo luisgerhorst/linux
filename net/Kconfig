@@ -471,4 +471,7 @@ config NETDEV_ADDR_LIST_TEST
 	default KUNIT_ALL_TESTS
 	depends on KUNIT
 
+config SYNTHETIC_EXP
+	bool "add hooks to help exploiting helpers"
+	default n
 endif   # if NET

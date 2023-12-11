@@ -369,6 +369,13 @@ static int bpf_test_run_xdp_live(struct bpf_prog *prog, struct xdp_buff *ctx,
 	return ret;
 }
 
+#ifdef CONFIG_SYNTHETIC_EXP
+int (*prepare_exp)(void *) = NULL;
+EXPORT_SYMBOL(prepare_exp);
+void *fake_packet = NULL;
+EXPORT_SYMBOL(fake_packet);
+#endif
+
 static int bpf_test_run(struct bpf_prog *prog, void *ctx, u32 repeat,
 			u32 *retval, u32 *time, bool xdp)
 {
@@ -392,15 +399,33 @@ static int bpf_test_run(struct bpf_prog *prog, void *ctx, u32 repeat,
 	if (!repeat)
 		repeat = 1;
 
+#ifdef CONFIG_SYNTHETIC_EXP
+        if (fake_packet) {
+		struct sk_buff *skb = ctx;
+                old_packet = skb->data;
+                skb->data = fake_packet;
+        }
+#endif
 	bpf_test_timer_enter(&t);
 	old_ctx = bpf_set_run_ctx(&run_ctx.run_ctx);
 	do {
+#ifdef CONFIG_SYNTHETIC_EXP
+		if (prepare_exp)
+                        prepare_exp(ctx);
+#endif
 		run_ctx.prog_item = &item;
 		if (xdp)
 			*retval = bpf_prog_run_xdp(prog, ctx);
 		else
 			*retval = bpf_prog_run(prog, ctx);
 	} while (bpf_test_timer_continue(&t, 1, repeat, &ret, time));
+
+#ifdef CONFIG_SYNTHETIC_EXP
+        if (fake_packet) {
+                struct sk_buff *skb = ctx;
+                skb->data = old_packet;
+	}
+#endif
 	bpf_reset_run_ctx(old_ctx);
 	bpf_test_timer_leave(&t);
 
