@@ -61,7 +61,7 @@ void __bpfbox *open_bpf_scratch(int size)
 
 void close_bpf_scratch(int size)
 {
-	struct bpfbox_scratch_region *region = this_cpu_ptr(&bpfbox_scratch_region);
+	struct bpfbox_scratch_region *region = raw_cpu_ptr(&bpfbox_scratch_region);
 	local_sub(size, &region->sp);
 }
 
