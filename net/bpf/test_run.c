@@ -384,6 +384,9 @@ static int bpf_test_run(struct bpf_prog *prog, void *ctx, u32 repeat,
 	struct bpf_cg_run_ctx run_ctx;
 	struct bpf_test_timer t = { NO_MIGRATE };
 	enum bpf_cgroup_storage_type stype;
+#ifdef CONFIG_SYNTHETIC_EXP
+	void *old_packet = NULL;
+#endif
 	int ret;
 
 	for_each_cgroup_storage_type(stype) {
