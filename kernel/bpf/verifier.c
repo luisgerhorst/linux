@@ -187,6 +187,7 @@ struct bpf_verifier_stack_elem {
 };
 
 #define BPF_COMPLEXITY_LIMIT_JMP_SEQ	8192
+#define BPF_COMPLEXITY_LIMIT_SPEC_V1_VERIFICATION	(BPF_COMPLEXITY_LIMIT_JMP_SEQ / 2)
 #define BPF_COMPLEXITY_LIMIT_STATES	64
 
 #define BPF_MAP_KEY_POISON	(1ULL << 63)
@@ -1912,17 +1913,31 @@ static int pop_stack(struct bpf_verifier_env *env, int *prev_insn_idx,
 	return 0;
 }
 
-static struct bpf_verifier_state *push_stack(struct bpf_verifier_env *env,
-					     int insn_idx, int prev_insn_idx,
-					     bool speculative)
+static int push_stack(struct bpf_verifier_env *env, int insn_idx,
+		      int prev_insn_idx, bool speculative,
+		      struct bpf_verifier_state **state_out)
 {
 	struct bpf_verifier_state *cur = env->cur_state;
 	struct bpf_verifier_stack_elem *elem;
 	int err;
 
+	if (!env->bypass_spec_v1 &&
+	    cur->speculative &&
+	    env->stack_size > BPF_COMPLEXITY_LIMIT_SPEC_V1_VERIFICATION) {
+		verbose(env, "Avoiding nested speculative path verification because "
+			"we are close to exceeding the jump sequence complexity limit. "
+			"Will instead insert a speculation barrier which will impact performace. "
+			"To improve performance, reduce the program's complexity.\n");
+		/* Barrier will be inserted in do_check(). */
+		*state_out = NULL;
+		return -EINVAL;
+	}
+
 	elem = kzalloc(sizeof(struct bpf_verifier_stack_elem), GFP_KERNEL);
-	if (!elem)
-		goto err;
+	if (!elem) {
+		err = -ENOMEM;
+		goto unrecoverable_err;
+	}
 
 	elem->insn_idx = insn_idx;
 	elem->prev_insn_idx = prev_insn_idx;
@@ -1932,12 +1947,13 @@ static struct bpf_verifier_state *push_stack(struct bpf_verifier_env *env,
 	env->stack_size++;
 	err = copy_verifier_state(&elem->st, cur);
 	if (err)
-		goto err;
+		goto unrecoverable_err;
 	elem->st.speculative |= speculative;
 	if (env->stack_size > BPF_COMPLEXITY_LIMIT_JMP_SEQ) {
 		verbose(env, "The sequence of %d jumps is too complex.\n",
 			env->stack_size);
-		goto err;
+		err = -EINVAL;
+		goto unrecoverable_err;
 	}
 	if (elem->st.parent) {
 		++elem->st.parent->branches;
@@ -1951,13 +1967,16 @@ static struct bpf_verifier_state *push_stack(struct bpf_verifier_env *env,
 		 * which might have large 'branches' count.
 		 */
 	}
-	return &elem->st;
-err:
+	*state_out = &elem->st;
+	return 0;
+unrecoverable_err:
 	free_verifier_state(env->cur_state, true);
 	env->cur_state = NULL;
 	/* pop all elements and return */
 	while (!pop_stack(env, NULL, NULL, false));
-	return NULL;
+	*state_out = NULL;
+	WARN_ON_ONCE(err >= 0);
+	return err;
 }
 
 #define CALLER_SAVED_REGS 6
@@ -8588,6 +8607,7 @@ static int process_iter_next_call(struct bpf_verifier_env *env, int insn_idx,
 	struct bpf_verifier_state *cur_st = env->cur_state, *queued_st, *prev_st;
 	struct bpf_func_state *cur_fr = cur_st->frame[cur_st->curframe], *queued_fr;
 	struct bpf_reg_state *cur_iter, *queued_iter;
+	int err;
 
 	BTF_TYPE_EMIT(struct bpf_iter);
 
@@ -8615,9 +8635,9 @@ static int process_iter_next_call(struct bpf_verifier_env *env, int insn_idx,
 		 */
 		prev_st = find_prev_entry(env, cur_st->parent, insn_idx);
 		/* branch out active iter state */
-		queued_st = push_stack(env, insn_idx + 1, insn_idx, false);
-		if (!queued_st)
-			return -ENOMEM;
+		err = push_stack(env, insn_idx + 1, insn_idx, false, &queued_st);
+		if (err)
+			return err;
 
 		queued_iter = get_iter_from_state(queued_st, meta);
 		queued_iter->iter.state = BPF_ITER_STATE_ACTIVE;
@@ -10186,9 +10206,9 @@ static int push_callback_call(struct bpf_verifier_env *env, struct bpf_insn *ins
 	/* for callback functions enqueue entry to callback and
 	 * proceed with next instruction within current frame.
 	 */
-	callback_state = push_stack(env, env->subprog_info[subprog].start, insn_idx, false);
-	if (!callback_state)
-		return -ENOMEM;
+	err = push_stack(env, env->subprog_info[subprog].start, insn_idx, false, &callback_state);
+	if (err)
+		return err;
 
 	err = setup_func_entry(env, subprog, insn_idx, set_callee_state_cb,
 			       callback_state);
@@ -13539,7 +13559,6 @@ enum {
 	REASON_TYPE	= -2,
 	REASON_PATHS	= -3,
 	REASON_LIMIT	= -4,
-	REASON_STACK	= -5,
 };
 
 static int retrieve_ptr_limit(const struct bpf_reg_state *ptr_reg,
@@ -13617,7 +13636,7 @@ struct bpf_sanitize_info {
 	bool mask_to_left;
 };
 
-static struct bpf_verifier_state *
+static int
 sanitize_speculative_path(struct bpf_verifier_env *env,
 			  const struct bpf_insn *insn,
 			  u32 next_idx, u32 curr_idx)
@@ -13625,7 +13644,7 @@ sanitize_speculative_path(struct bpf_verifier_env *env,
 	struct bpf_verifier_state *branch;
 	struct bpf_reg_state *regs;
 
-	branch = push_stack(env, next_idx, curr_idx, true);
+	int err = push_stack(env, next_idx, curr_idx, true, &branch);
 	if (branch && insn) {
 		regs = branch->frame[branch->curframe]->regs;
 		if (BPF_SRC(insn->code) == BPF_K) {
@@ -13635,7 +13654,7 @@ sanitize_speculative_path(struct bpf_verifier_env *env,
 			mark_reg_unknown(env, regs, insn->src_reg);
 		}
 	}
-	return branch;
+	return err;
 }
 
 static int sanitize_ptr_alu(struct bpf_verifier_env *env,
@@ -13654,7 +13673,6 @@ static int sanitize_ptr_alu(struct bpf_verifier_env *env,
 	u8 opcode = BPF_OP(insn->code);
 	u32 alu_state, alu_limit;
 	struct bpf_reg_state tmp;
-	bool ret;
 	int err;
 
 	if (can_skip_alu_sanitation(env, insn))
@@ -13727,11 +13745,11 @@ do_sim:
 		tmp = *dst_reg;
 		copy_register_state(dst_reg, ptr_reg);
 	}
-	ret = sanitize_speculative_path(env, NULL, env->insn_idx + 1,
+	err = sanitize_speculative_path(env, NULL, env->insn_idx + 1,
 					env->insn_idx);
-	if (!ptr_is_dst_reg && ret)
+	if (!ptr_is_dst_reg && !err)
 		*dst_reg = tmp;
-	return !ret ? REASON_STACK : 0;
+	return err;
 }
 
 static void sanitize_mark_insn_seen(struct bpf_verifier_env *env)
@@ -13773,17 +13791,12 @@ static int sanitize_err(struct bpf_verifier_env *env,
 		verbose(env, "R%d tried to %s beyond pointer bounds, %s\n",
 			dst, op, err);
 		break;
-	case REASON_STACK:
-		verbose(env, "R%d could not be pushed for speculative verification, %s\n",
-			dst, err);
-		break;
 	default:
-		verbose(env, "verifier internal error: unknown reason (%d)\n",
-			reason);
 		break;
 	}
 
-	return -EACCES;
+	WARN_ON_ONCE(reason >= 0);
+	return reason;
 }
 
 /* check that stack access falls within stack limits and that 'reg' doesn't
@@ -15979,9 +15992,9 @@ static int check_cond_jmp_op(struct bpf_verifier_env *env,
 		prev_st = find_prev_entry(env, cur_st->parent, idx);
 
 		/* branch out 'fallthrough' insn as a new state to explore */
-		queued_st = push_stack(env, idx + 1, idx, false);
-		if (!queued_st)
-			return -ENOMEM;
+		err = push_stack(env, idx + 1, idx, false, &queued_st);
+		if (err)
+			return err;
 
 		queued_st->may_goto_depth++;
 		if (prev_st)
@@ -16045,10 +16058,12 @@ static int check_cond_jmp_op(struct bpf_verifier_env *env,
 		 * the fall-through branch for simulation under speculative
 		 * execution.
 		 */
-		if (!env->bypass_spec_v1 &&
-		    !sanitize_speculative_path(env, insn, *insn_idx + 1,
-					       *insn_idx))
-			return -EFAULT;
+		if (!env->bypass_spec_v1) {
+			err = sanitize_speculative_path(
+				env, insn, *insn_idx + 1, *insn_idx);
+			if (err)
+				return err;
+		}
 		if (env->log.level & BPF_LOG_LEVEL)
 			print_insn_state(env, this_branch, this_branch->curframe);
 		*insn_idx += insn->off;
@@ -16058,11 +16073,13 @@ static int check_cond_jmp_op(struct bpf_verifier_env *env,
 		 * program will go. If needed, push the goto branch for
 		 * simulation under speculative execution.
 		 */
-		if (!env->bypass_spec_v1 &&
-		    !sanitize_speculative_path(env, insn,
-					       *insn_idx + insn->off + 1,
-					       *insn_idx))
-			return -EFAULT;
+		if (!env->bypass_spec_v1) {
+			err = sanitize_speculative_path(
+				env, insn, *insn_idx + insn->off + 1,
+				*insn_idx);
+			if (err)
+				return err;
+		}
 		if (env->log.level & BPF_LOG_LEVEL)
 			print_insn_state(env, this_branch, this_branch->curframe);
 		return 0;
@@ -16083,10 +16100,10 @@ static int check_cond_jmp_op(struct bpf_verifier_env *env,
 			return err;
 	}
 
-	other_branch = push_stack(env, *insn_idx + insn->off + 1, *insn_idx,
-				  false);
-	if (!other_branch)
-		return -EFAULT;
+	err = push_stack(env, *insn_idx + insn->off + 1, *insn_idx,
+			 false, &other_branch);
+	if (err)
+		return err;
 	other_branch_regs = other_branch->frame[other_branch->curframe]->regs;
 
 	if (BPF_SRC(insn->code) == BPF_X) {
@@ -19234,15 +19251,7 @@ static int do_check(struct bpf_verifier_env *env)
 					else
 						verbose(env, "%d: safe\n", env->insn_idx);
 				}
-				err = process_bpf_exit(env, &prev_insn_idx, pop_log, &do_print_state);
-				if (err == CHECK_NEXT_INSN) {
-					continue;
-				} else if (err == ALL_PATHS_CHECKED) {
-					break;
-				} else if (err) {
-					BUG_ON(err > 0);
-					return err;
-				}
+				goto nospec_or_safe_state_found;
 			}
 		}
 
@@ -19296,14 +19305,44 @@ static int do_check(struct bpf_verifier_env *env)
 		sanitize_mark_insn_seen(env);
 		prev_insn_idx = env->insn_idx;
 
+		if (state->speculative && cur_aux(env)->nospec) {
+			/* Reduce verification complexity by only simulating
+			 * speculative paths until we reach a nospec. */
+			goto nospec_or_safe_state_found;
+		}
+
 		err = do_check_insn(env, insn, pop_log, &do_print_state, regs, state, &prev_insn_idx);
 		if (err == CHECK_NEXT_INSN) {
 			continue;
 		} else if (err == ALL_PATHS_CHECKED) {
 			break;
+		} else if ((err == -EPERM || err == -EACCES || err == -EINVAL)
+			   && state->speculative) {
+			WARN_ON_ONCE(env->bypass_spec_v1);
+			BUG_ON(env->cur_state != state);
+
+			/* Prevent this speculative path from ever reaching the
+			 * insn that would have been unsafe to execute. */
+			cur_aux(env)->nospec = true;
+
+			goto nospec_or_safe_state_found;
 		} else if (err) {
 			BUG_ON(err > 0);
 			return err;
+		}
+
+		if (state->speculative && cur_aux(env)->nospec_result) {
+			/* Reduce verification complexity by stopping spec.
+			 * verification when nospec is encountered. */
+nospec_or_safe_state_found:
+			err = process_bpf_exit(env, &prev_insn_idx, pop_log, &do_print_state);
+			if (err == CHECK_NEXT_INSN) {
+				continue;
+			} else if (err == ALL_PATHS_CHECKED) {
+				break;
+			} else {
+				return err;
+			}
 		}
 
 		env->insn_idx++;
@@ -20470,6 +20509,24 @@ static int convert_ctx_accesses(struct bpf_verifier_env *env)
 			}
 			goto patch_insn_buf;
 		} else {
+			continue;
+		}
+
+		/* TODO: Unify the following two. */
+		if (env->insn_aux_data[i + delta].nospec) {
+			struct bpf_insn patch[] = {
+				BPF_ST_NOSPEC(),
+				*insn,
+			};
+
+			cnt = ARRAY_SIZE(patch);
+			new_prog = bpf_patch_insn_data(env, i + delta, patch, cnt);
+			if (!new_prog)
+				return -ENOMEM;
+
+			delta    += cnt - 1;
+			env->prog = new_prog;
+			insn      = new_prog->insnsi + i + delta;
 			continue;
 		}
 
