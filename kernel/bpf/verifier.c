@@ -19296,14 +19296,62 @@ static int do_check(struct bpf_verifier_env *env)
 		sanitize_mark_insn_seen(env);
 		prev_insn_idx = env->insn_idx;
 
+		if (state->speculative && cur_aux(env)->nospec) {
+			/* Reduce verification complexity by only simulating
+			 * speculative paths until we reach a nospec. */
+			err = process_bpf_exit(env, &prev_insn_idx, pop_log, &do_print_state);
+			if (err == CHECK_NEXT_INSN) {
+				continue;
+			} else if (err == ALL_PATHS_CHECKED) {
+				break;
+			} else {
+				WARN_ON_ONCE(err != -ENOMEM);
+				verbose(env, "speculative bpf_process_exit() because of nospec failed");
+				return err;
+			}
+		}
+
 		err = do_check_insn(env, insn, pop_log, &do_print_state, regs, state, &prev_insn_idx);
 		if (err == CHECK_NEXT_INSN) {
 			continue;
 		} else if (err == ALL_PATHS_CHECKED) {
 			break;
+		} else if ((err == -EPERM || err == -EACCES || err == -EINVAL)
+			   && state->speculative) {
+			WARN_ON_ONCE(env->bypass_spec_v1);
+			BUG_ON(env->cur_state != state);
+
+			/* Prevent this speculative path from ever reaching the
+			 * insn that would have been unsafe to execute. */
+			cur_aux(env)->nospec = true;
+
+			err = process_bpf_exit(env, &prev_insn_idx, pop_log, &do_print_state);
+			if (err == CHECK_NEXT_INSN) {
+				continue;
+			} else if (err == ALL_PATHS_CHECKED) {
+				break;
+			} else {
+				WARN_ON_ONCE(err != -ENOMEM);
+				verbose(env, "speculative bpf_process_exit() because of do_check_insn() failure failed");
+				return err;
+			}
 		} else if (err) {
 			BUG_ON(err > 0);
 			return err;
+		}
+
+		if (state->speculative && cur_aux(env)->nospec_result) {
+			/* Reduce verification complexity by  */
+			err = process_bpf_exit(env, &prev_insn_idx, pop_log, &do_print_state);
+			if (err == CHECK_NEXT_INSN) {
+				continue;
+			} else if (err == ALL_PATHS_CHECKED) {
+				break;
+			} else {
+				WARN_ON_ONCE(err != -ENOMEM);
+				verbose(env, "speculative bpf_process_exit() because of nospec_result failed");
+				return err;
+			}
 		}
 
 		env->insn_idx++;
@@ -20470,6 +20518,24 @@ static int convert_ctx_accesses(struct bpf_verifier_env *env)
 			}
 			goto patch_insn_buf;
 		} else {
+			continue;
+		}
+
+		/* TODO: Unify the following two. */
+		if (env->insn_aux_data[i + delta].nospec) {
+			struct bpf_insn patch[] = {
+				BPF_ST_NOSPEC(),
+				*insn,
+			};
+
+			cnt = ARRAY_SIZE(patch);
+			new_prog = bpf_patch_insn_data(env, i + delta, patch, cnt);
+			if (!new_prog)
+				return -ENOMEM;
+
+			delta    += cnt - 1;
+			env->prog = new_prog;
+			insn      = new_prog->insnsi + i + delta;
 			continue;
 		}
 
