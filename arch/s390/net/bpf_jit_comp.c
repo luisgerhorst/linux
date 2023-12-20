@@ -1244,7 +1244,8 @@ static noinline int bpf_jit_insn(struct bpf_jit *jit, struct bpf_prog *fp,
 	/*
 	 * BPF_NOSPEC (speculation barrier)
 	 */
-	case BPF_ST | BPF_NOSPEC:
+	case BPF_ST | BPF_NOSPEC_V1: /* TODO */
+	case BPF_ST | BPF_NOSPEC_V4:
 		break;
 	/*
 	 * BPF_ST(X)

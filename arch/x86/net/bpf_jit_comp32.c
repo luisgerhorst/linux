@@ -1902,8 +1902,9 @@ static int do_jit(struct bpf_prog *bpf_prog, int *addrs, u8 *image,
 			i++;
 			break;
 		}
-		/* speculation barrier */
-		case BPF_ST | BPF_NOSPEC:
+		/* speculation barriers */
+		case BPF_ST | BPF_NOSPEC_V1:
+		case BPF_ST | BPF_NOSPEC_V4:
 			if (boot_cpu_has(X86_FEATURE_XMM2))
 				/* Emit 'lfence' */
 				EMIT3(0x0F, 0xAE, 0xE8);

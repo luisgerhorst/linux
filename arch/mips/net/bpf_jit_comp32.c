@@ -1684,7 +1684,8 @@ int build_insn(const struct bpf_insn *insn, struct jit_context *ctx)
 		emit_stx(ctx, lo(dst), src, off, BPF_SIZE(code));
 		break;
 	/* Speculation barrier */
-	case BPF_ST | BPF_NOSPEC:
+	case BPF_ST | BPF_NOSPEC_V1: /* TODO */
+	case BPF_ST | BPF_NOSPEC_V4:
 		break;
 	/* Atomics */
 	case BPF_STX | BPF_ATOMIC | BPF_W:

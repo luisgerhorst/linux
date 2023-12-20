@@ -727,7 +727,8 @@ emit_clear:
 		/*
 		 * BPF_ST NOSPEC (speculation barrier)
 		 */
-		case BPF_ST | BPF_NOSPEC:
+		case BPF_ST | BPF_NOSPEC_V1: /* TODO */
+		case BPF_ST | BPF_NOSPEC_V4:
 			if (!security_ftr_enabled(SEC_FTR_FAVOUR_SECURITY) ||
 					!security_ftr_enabled(SEC_FTR_STF_BARRIER))
 				break;

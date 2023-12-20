@@ -1319,7 +1319,8 @@ static int do_jit(struct bpf_prog *bpf_prog, int *addrs, u8 *image, u8 *rw_image
 			break;
 
 			/* speculation barrier */
-		case BPF_ST | BPF_NOSPEC:
+		case BPF_ST | BPF_NOSPEC_V1:
+		case BPF_ST | BPF_NOSPEC_V4:
 			EMIT_LFENCE();
 			break;
 

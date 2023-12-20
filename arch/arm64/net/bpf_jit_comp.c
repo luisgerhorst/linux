@@ -1178,8 +1178,12 @@ emit_cond_jmp:
 			return ret;
 		break;
 
-	/* speculation barrier */
-	case BPF_ST | BPF_NOSPEC:
+	case BPF_ST | BPF_NOSPEC_V1:
+		/* TODO */
+		break;
+
+	/* speculative store bypass barrier */
+	case BPF_ST | BPF_NOSPEC_V4:
 		/*
 		 * Nothing required here.
 		 *
