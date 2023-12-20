@@ -1820,22 +1820,26 @@ static int pop_stack(struct bpf_verifier_env *env, int *prev_insn_idx,
 	return 0;
 }
 
-static struct bpf_verifier_state *push_stack(struct bpf_verifier_env *env,
-					     int insn_idx, int prev_insn_idx,
-					     bool speculative)
+static int push_stack(struct bpf_verifier_env *env,
+		      int insn_idx, int prev_insn_idx,
+		      bool speculative, struct bpf_verifier_state **branch)
 {
 	struct bpf_verifier_state *cur = env->cur_state;
 	struct bpf_verifier_stack_elem *elem;
 	int err;
 
+	*branch = NULL;
+
 	if (!env->bypass_spec_v1 && cur->speculative && env->stack_size > bpf_spec_v1_complexity_limit_jmp_seq) {
 		verbose(env, "avoiding spec. push_stack()\n");
-		return NULL;
+		return -EACCES;
 	}
 
 	elem = kzalloc(sizeof(struct bpf_verifier_stack_elem), GFP_KERNEL);
-	if (!elem)
+	if (!elem) {
+		err = -ENOMEM;
 		goto err;
+	}
 
 	elem->insn_idx = insn_idx;
 	elem->prev_insn_idx = prev_insn_idx;
@@ -1844,12 +1848,15 @@ static struct bpf_verifier_state *push_stack(struct bpf_verifier_env *env,
 	env->head = elem;
 	env->stack_size++;
 	err = copy_verifier_state(&elem->st, cur);
-	if (err)
+	if (err) {
+		WARN_ON_ONCE(err != -ENOMEM);
 		goto err;
+	}
 	elem->st.speculative |= speculative;
 	if (env->stack_size > bpf_complexity_limit_jmp_seq) {
 		verbose(env, "The sequence of %d jumps is too complex.\n",
 			env->stack_size);
+		err = -EFAULT;
 		goto err;
 	}
 	if (elem->st.parent) {
@@ -1864,13 +1871,14 @@ static struct bpf_verifier_state *push_stack(struct bpf_verifier_env *env,
 		 * which might have large 'branches' count.
 		 */
 	}
-	return &elem->st;
+	*branch = &elem->st;
+	return err;
 err:
 	free_verifier_state(env->cur_state, true);
 	env->cur_state = NULL;
 	/* pop all elements and return */
 	while (!pop_stack(env, NULL, NULL, false));
-	return NULL;
+	return err;
 }
 
 #define CALLER_SAVED_REGS 6
@@ -4325,7 +4333,7 @@ static int check_stack_write_fixed_off(struct bpf_verifier_env *env,
 		}
 
 		if (sanitize)
-			env->insn_aux_data[insn_idx].sanitize_stack_spill = true;
+			env->insn_aux_data[insn_idx].nospec_v4_result = true;
 	}
 
 	err = destroy_if_dynptr_stack_slot(env, state, spi);
@@ -7437,9 +7445,10 @@ static int process_iter_next_call(struct bpf_verifier_env *env, int insn_idx,
 
 	if (cur_iter->iter.state == BPF_ITER_STATE_ACTIVE) {
 		/* branch out active iter state */
-		queued_st = push_stack(env, insn_idx + 1, insn_idx, false);
-		if (!queued_st)
-			return -ENOMEM;
+		int err = push_stack(env, insn_idx + 1, insn_idx, false, &queued_st);
+		if (err)
+			return err;
+		BUG_ON(!queued_st);
 
 		queued_iter = &queued_st->frame[iter_frameno]->stack[iter_spi].spilled_ptr;
 		queued_iter->iter.state = BPF_ITER_STATE_ACTIVE;
@@ -11573,10 +11582,13 @@ static int retrieve_ptr_limit(const struct bpf_reg_state *ptr_reg,
 	return 0;
 }
 
-static bool can_skip_alu_sanitation(const struct bpf_verifier_env *env,
+static bool can_skip_alu_sanitation(struct bpf_verifier_env *env,
 				    const struct bpf_insn *insn)
 {
-	return env->bypass_spec_v1 || BPF_SRC(insn->code) == BPF_K;
+	/* When we already had to fall back to adding a nospec for some reason,
+	 * we also no longer have to keep track of the alu san. state. */
+	WARN_ON_ONCE(cur_aux(env)->alu_state && cur_aux(env)->nospec_v1_result);
+	return env->bypass_spec_v1 || BPF_SRC(insn->code) == BPF_K || cur_aux(env)->nospec_v1_result;
 }
 
 static int update_alu_sanitation_state(struct bpf_insn_aux_data *aux,
@@ -11591,6 +11603,7 @@ static int update_alu_sanitation_state(struct bpf_insn_aux_data *aux,
 		return REASON_PATHS;
 
 	/* Corresponding fixup done in do_misc_fixups(). */
+	WARN_ON_ONCE(aux->nospec_v1_result);
 	aux->alu_state = alu_state;
 	aux->alu_limit = alu_limit;
 	return 0;
@@ -11617,15 +11630,16 @@ struct bpf_sanitize_info {
 	bool mask_to_left;
 };
 
-static struct bpf_verifier_state *
+static int
 sanitize_speculative_path(struct bpf_verifier_env *env,
 			  const struct bpf_insn *insn,
 			  u32 next_idx, u32 curr_idx)
 {
 	struct bpf_verifier_state *branch;
 	struct bpf_reg_state *regs;
+	int err;
 
-	branch = push_stack(env, next_idx, curr_idx, true);
+	err = push_stack(env, next_idx, curr_idx, true, &branch);
 	if (branch && insn) {
 		regs = branch->frame[branch->curframe]->regs;
 		if (BPF_SRC(insn->code) == BPF_K) {
@@ -11635,7 +11649,7 @@ sanitize_speculative_path(struct bpf_verifier_env *env,
 			mark_reg_unknown(env, regs, insn->src_reg);
 		}
 	}
-	return branch;
+	return err;
 }
 
 static int sanitize_ptr_alu(struct bpf_verifier_env *env,
@@ -11654,7 +11668,6 @@ static int sanitize_ptr_alu(struct bpf_verifier_env *env,
 	u8 opcode = BPF_OP(insn->code);
 	u32 alu_state, alu_limit;
 	struct bpf_reg_state tmp;
-	bool ret;
 	int err;
 
 	if (can_skip_alu_sanitation(env, insn))
@@ -11727,11 +11740,11 @@ do_sim:
 		tmp = *dst_reg;
 		copy_register_state(dst_reg, ptr_reg);
 	}
-	ret = sanitize_speculative_path(env, NULL, env->insn_idx + 1,
+	err = sanitize_speculative_path(env, NULL, env->insn_idx + 1,
 					env->insn_idx);
-	if (!ptr_is_dst_reg && ret)
+	if (!ptr_is_dst_reg && !err)
 		*dst_reg = tmp;
-	return !ret ? REASON_STACK : 0;
+	return (err == -ENOMEM || err == -EFAULT) ? REASON_STACK : err;
 }
 
 static void sanitize_mark_insn_seen(struct bpf_verifier_env *env)
@@ -11755,6 +11768,7 @@ static int sanitize_err(struct bpf_verifier_env *env,
 	static const char *err = "pointer arithmetic with it prohibited for !root";
 	const char *op = BPF_OP(insn->code) == BPF_ADD ? "add" : "sub";
 	u32 dst = insn->dst_reg, src = insn->src_reg;
+	struct bpf_insn_aux_data *aux = cur_aux(env);
 
 	switch (reason) {
 	case REASON_BOUNDS:
@@ -11762,13 +11776,16 @@ static int sanitize_err(struct bpf_verifier_env *env,
 			off_reg == dst_reg ? dst : src, err);
 		break;
 	case REASON_TYPE:
-		verbose(env, "R%d has pointer with unsupported alu operation, %s\n",
-			off_reg == dst_reg ? src : dst, err);
-		break;
+		/* Register has pointer with unsupported alu operation. */
+		aux->nospec_v1_result = true;
+		aux->alu_state = 0;
+		return 0;
 	case REASON_PATHS:
-		verbose(env, "R%d tried to %s from different maps, paths or scalars, %s\n",
-			dst, op, err);
-		break;
+		/* Tried to perform alu op from different maps, paths or
+		 * scalars. */
+		aux->nospec_v1_result = true;
+		aux->alu_state = 0;
+		return 0;
 	case REASON_LIMIT:
 		verbose(env, "R%d tried to %s beyond pointer bounds, %s\n",
 			dst, op, err);
@@ -11802,6 +11819,8 @@ static int check_stack_access_for_ptr_arithmetic(
 				const struct bpf_reg_state *reg,
 				int off)
 {
+	WARN_ON_ONCE(env->bypass_spec_v1);
+
 	if (!tnum_is_const(reg->var_off)) {
 		char tn_buf[48];
 
@@ -11812,9 +11831,8 @@ static int check_stack_access_for_ptr_arithmetic(
 	}
 
 	if (off >= 0 || off < -MAX_BPF_STACK) {
-		verbose(env, "R%d stack pointer arithmetic goes out of range, "
-			"prohibited for !root; off=%d\n", regno, off);
-		return -EACCES;
+		cur_aux(env)->nospec_v1_result = true;
+		cur_aux(env)->alu_state = 0;
 	}
 
 	return 0;
@@ -11840,9 +11858,12 @@ static int sanitize_check_bounds(struct bpf_verifier_env *env,
 		break;
 	case PTR_TO_MAP_VALUE:
 		if (check_map_access(env, dst, dst_reg->off, 1, false, ACCESS_HELPER)) {
-			verbose(env, "R%d pointer arithmetic of map value goes out of range, "
-				"prohibited for !root\n", dst);
-			return -EACCES;
+			WARN_ON_ONCE(BPF_OP(insn->code) != BPF_ADD &&
+				     BPF_OP(insn->code) != BPF_SUB);
+			/* dst pointer arithmetic of map value goes out of
+			 * range, prohibited for !root */
+			cur_aux(env)->nospec_v1_result = true;
+			cur_aux(env)->alu_state = 0;
 		}
 		break;
 	default:
@@ -11940,7 +11961,9 @@ static int adjust_ptr_min_max_vals(struct bpf_verifier_env *env,
 		ret = sanitize_ptr_alu(env, insn, ptr_reg, off_reg, dst_reg,
 				       &info, false);
 		if (ret < 0)
-			return sanitize_err(env, insn, ret, off_reg, dst_reg);
+			ret = sanitize_err(env, insn, ret, off_reg, dst_reg);
+		if (ret < 0)
+			return ret;
 	}
 
 	switch (opcode) {
@@ -12077,7 +12100,9 @@ static int adjust_ptr_min_max_vals(struct bpf_verifier_env *env,
 		ret = sanitize_ptr_alu(env, insn, dst_reg, off_reg, dst_reg,
 				       &info, true);
 		if (ret < 0)
-			return sanitize_err(env, insn, ret, off_reg, dst_reg);
+			ret = sanitize_err(env, insn, ret, off_reg, dst_reg);
+		if (ret < 0)
+			return ret;
 	}
 
 	return 0;
@@ -12713,7 +12738,9 @@ static int adjust_scalar_min_max_vals(struct bpf_verifier_env *env,
 	if (sanitize_needed(opcode)) {
 		ret = sanitize_val_alu(env, insn);
 		if (ret < 0)
-			return sanitize_err(env, insn, ret, NULL, NULL);
+			ret = sanitize_err(env, insn, ret, NULL, NULL);
+		if (ret < 0)
+			return ret;
 	}
 
 	/* Calculate sign/unsigned bounds and tnum for alu32 and alu64 bit ops.
@@ -13911,10 +13938,11 @@ static int check_cond_jmp_op(struct bpf_verifier_env *env,
 		 * the fall-through branch for simulation under speculative
 		 * execution.
 		 */
-		if (!env->bypass_spec_v1 &&
-		    !sanitize_speculative_path(env, insn, *insn_idx + 1,
-					       *insn_idx))
-			return -EFAULT;
+		if (!env->bypass_spec_v1) {
+			err = sanitize_speculative_path(env, insn, *insn_idx + 1, *insn_idx);
+			if (err)
+				return err;
+		}
 		*insn_idx += insn->off;
 		return 0;
 	} else if (pred == 0) {
@@ -13922,18 +13950,23 @@ static int check_cond_jmp_op(struct bpf_verifier_env *env,
 		 * program will go. If needed, push the goto branch for
 		 * simulation under speculative execution.
 		 */
-		if (!env->bypass_spec_v1 &&
-		    !sanitize_speculative_path(env, insn,
-					       *insn_idx + insn->off + 1,
-					       *insn_idx))
-			return -EFAULT;
+		if (!env->bypass_spec_v1) {
+		    err = sanitize_speculative_path(env, insn,
+						    *insn_idx + insn->off + 1,
+						    *insn_idx);
+		    if (err)
+			return err;
+
+		}
 		return 0;
 	}
 
-	other_branch = push_stack(env, *insn_idx + insn->off + 1, *insn_idx,
-				  false);
-	if (!other_branch)
-		return -EFAULT;
+	err = push_stack(env, *insn_idx + insn->off + 1, *insn_idx,
+			 false, &other_branch);
+	if (err)
+		return err;
+	BUG_ON(!other_branch);
+	/* TODO: Handle !err && !other_branch. */
 	other_branch_regs = other_branch->frame[other_branch->curframe]->regs;
 
 	/* detect if we are comparing against a constant value so we can adjust
@@ -16505,9 +16538,9 @@ static int do_check(struct bpf_verifier_env *env)
 					continue;
 				} else if (err == ALL_PATHS_CHECKED) {
 					break;
-				} else if (err) {
-					BUG_ON(err > 0);
-					return err;
+				} else {
+					WARN_ON_ONCE(true);
+					return -EINVAL;
 				}
 			}
 		}
@@ -16562,14 +16595,58 @@ static int do_check(struct bpf_verifier_env *env)
 		sanitize_mark_insn_seen(env);
 		prev_insn_idx = env->insn_idx;
 
+		if (!env->bypass_spec_v1 && state->speculative && cur_aux(env)->nospec_v1) {
+			err = process_bpf_exit(env, &prev_insn_idx, pop_log, &do_print_state);
+			if (err == CHECK_NEXT_INSN) {
+				continue;
+			} else if (err == ALL_PATHS_CHECKED) {
+				break;
+			} else {
+				WARN_ON_ONCE(err != -ENOMEM);
+				verbose(env, "speculative bpf_process_exit() because of nospec_v1 failed");
+				return err;
+			}
+		}
+
 		err = do_check_insn(env, insn, pop_log, &do_print_state, regs, state, &prev_insn_idx);
 		if (err == CHECK_NEXT_INSN) {
 			continue;
 		} else if (err == ALL_PATHS_CHECKED) {
 			break;
+		} else if ((err == -EPERM || err == -EACCES || err == -EINVAL)
+			   && state->speculative) {
+			WARN_ON_ONCE(env->bypass_spec_v1);
+			BUG_ON(env->cur_state != state);
+
+			/* Terminate this speculative path forcefully. */
+			cur_aux(env)->nospec_v1 = true;
+
+			err = process_bpf_exit(env, &prev_insn_idx, pop_log, &do_print_state);
+			if (err == CHECK_NEXT_INSN) {
+				continue;
+			} else if (err == ALL_PATHS_CHECKED) {
+				break;
+			} else {
+				WARN_ON_ONCE(err != -ENOMEM);
+				verbose(env, "speculative bpf_process_exit() because of do_check_insn() failure failed");
+				return err;
+			}
 		} else if (err) {
-			BUG_ON(err > 0);
+			WARN_ON_ONCE(err > 0);
 			return err;
+		}
+
+		if (!env->bypass_spec_v1 && state->speculative && cur_aux(env)->nospec_v1_result) {
+			err = process_bpf_exit(env, &prev_insn_idx, pop_log, &do_print_state);
+			if (err == CHECK_NEXT_INSN) {
+				continue;
+			} else if (err == ALL_PATHS_CHECKED) {
+				break;
+			} else {
+				WARN_ON_ONCE(err != -ENOMEM);
+				verbose(env, "speculative bpf_process_exit() because of nospec_v1_result failed");
+				return err;
+			}
 		}
 
 		env->insn_idx++;
@@ -17573,10 +17650,10 @@ static int convert_ctx_accesses(struct bpf_verifier_env *env)
 		}
 
 		if (type == BPF_WRITE &&
-		    env->insn_aux_data[i + delta].sanitize_stack_spill) {
+		    env->insn_aux_data[i + delta].nospec_v4_result) {
 			struct bpf_insn patch[] = {
 				*insn,
-				BPF_ST_NOSPEC(),
+				BPF_ST_NOSPEC_V4(),
 			};
 
 			cnt = ARRAY_SIZE(patch);
@@ -18196,6 +18273,7 @@ static int do_misc_fixups(struct bpf_verifier_env *env)
 			if (!aux->alu_state ||
 			    aux->alu_state == BPF_ALU_NON_POINTER)
 				continue;
+			WARN_ON_ONCE(aux->nospec_v1_result);
 
 			isneg = aux->alu_state & BPF_ALU_NEG_VALUE;
 			issrc = (aux->alu_state & BPF_ALU_SANITIZE) ==

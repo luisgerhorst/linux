@@ -1023,7 +1023,8 @@ static int build_insn(const struct bpf_insn *insn, struct jit_ctx *ctx, bool ext
 		break;
 
 	/* Speculation barrier */
-	case BPF_ST | BPF_NOSPEC:
+	case BPF_ST | BPF_NOSPEC_V1: /* TODO */
+	case BPF_ST | BPF_NOSPEC_V4:
 		break;
 
 	default:

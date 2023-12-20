@@ -1607,7 +1607,8 @@ exit:
 		emit_ldx_r(dst, rn, off, ctx, BPF_SIZE(code));
 		break;
 	/* speculation barrier */
-	case BPF_ST | BPF_NOSPEC:
+	case BPF_ST | BPF_NOSPEC_V1: /* TODO */
+	case BPF_ST | BPF_NOSPEC_V4:
 		break;
 	/* ST: *(size *)(dst + off) = imm */
 	case BPF_ST | BPF_MEM | BPF_W:

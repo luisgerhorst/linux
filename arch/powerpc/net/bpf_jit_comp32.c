@@ -801,7 +801,8 @@ int bpf_jit_build_body(struct bpf_prog *fp, u32 *image, struct codegen_context *
 		/*
 		 * BPF_ST NOSPEC (speculation barrier)
 		 */
-		case BPF_ST | BPF_NOSPEC:
+		case BPF_ST | BPF_NOSPEC_V1: /* TODO */
+		case BPF_ST | BPF_NOSPEC_V4:
 			break;
 
 		/*

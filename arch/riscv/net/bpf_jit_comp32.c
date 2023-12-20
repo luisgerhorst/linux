@@ -1250,7 +1250,8 @@ int bpf_jit_emit_insn(const struct bpf_insn *insn, struct rv_jit_context *ctx,
 		break;
 
 	/* speculation barrier */
-	case BPF_ST | BPF_NOSPEC:
+	case BPF_ST | BPF_NOSPEC_V1: /* TODO */
+	case BPF_ST | BPF_NOSPEC_V4:
 		break;
 
 	case BPF_ST | BPF_MEM | BPF_B:
