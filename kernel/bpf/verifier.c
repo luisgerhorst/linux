@@ -186,8 +186,6 @@ struct bpf_verifier_stack_elem {
 	u32 log_pos;
 };
 
-#define BPF_COMPLEXITY_LIMIT_JMP_SEQ	8192
-#define BPF_COMPLEXITY_LIMIT_SPEC_V1_VERIFICATION	(BPF_COMPLEXITY_LIMIT_JMP_SEQ / 2)
 #define BPF_COMPLEXITY_LIMIT_STATES	64
 
 #define BPF_MAP_KEY_POISON	(1ULL << 63)
@@ -1936,7 +1934,7 @@ static struct bpf_verifier_state *push_stack(struct bpf_verifier_env *env,
 
 	if (!env->bypass_spec_v1 &&
 	    cur->speculative &&
-	    env->stack_size > BPF_COMPLEXITY_LIMIT_SPEC_V1_VERIFICATION) {
+	    env->stack_size > bpf_spec_v1_complexity_limit_jmp_seq) {
 		/* Avoiding nested speculative path verification because we are
 		 * close to exceeding the jump sequence complexity limit. Will
 		 * instead insert a speculation barrier which will impact
@@ -1963,7 +1961,7 @@ static struct bpf_verifier_state *push_stack(struct bpf_verifier_env *env,
 	if (err)
 		goto unrecoverable_err;
 	elem->st.speculative |= speculative;
-	if (env->stack_size > BPF_COMPLEXITY_LIMIT_JMP_SEQ) {
+	if (env->stack_size > bpf_complexity_limit_jmp_seq) {
 		verbose(env, "The sequence of %d jumps is too complex.\n",
 			env->stack_size);
 		/* Do not return -EINVAL to signal to the main loop that this
@@ -2734,7 +2732,7 @@ static struct bpf_verifier_state *push_async_cb(struct bpf_verifier_env *env,
 	elem->log_pos = env->log.end_pos;
 	env->head = elem;
 	env->stack_size++;
-	if (env->stack_size > BPF_COMPLEXITY_LIMIT_JMP_SEQ) {
+	if (env->stack_size > bpf_complexity_limit_jmp_seq) {
 		verbose(env,
 			"The sequence of %d jumps is too complex for async cb.\n",
 			env->stack_size);
