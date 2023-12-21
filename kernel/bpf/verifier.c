@@ -186,7 +186,6 @@ struct bpf_verifier_stack_elem {
 	u32 log_pos;
 };
 
-#define BPF_COMPLEXITY_LIMIT_JMP_SEQ	8192
 #define BPF_COMPLEXITY_LIMIT_STATES	64
 
 #define BPF_MAP_KEY_POISON	(1ULL << 63)
@@ -1920,6 +1919,11 @@ static struct bpf_verifier_state *push_stack(struct bpf_verifier_env *env,
 	struct bpf_verifier_stack_elem *elem;
 	int err;
 
+	if (!env->bypass_spec_v1 && cur->speculative && env->stack_size > bpf_spec_v1_complexity_limit_jmp_seq) {
+		verbose(env, "avoiding spec. push_stack()\n");
+		return NULL;
+	}
+
 	elem = kzalloc(sizeof(struct bpf_verifier_stack_elem), GFP_KERNEL);
 	if (!elem)
 		goto err;
@@ -1934,7 +1938,7 @@ static struct bpf_verifier_state *push_stack(struct bpf_verifier_env *env,
 	if (err)
 		goto err;
 	elem->st.speculative |= speculative;
-	if (env->stack_size > BPF_COMPLEXITY_LIMIT_JMP_SEQ) {
+	if (env->stack_size > bpf_complexity_limit_jmp_seq) {
 		verbose(env, "The sequence of %d jumps is too complex.\n",
 			env->stack_size);
 		goto err;
@@ -2697,7 +2701,7 @@ static struct bpf_verifier_state *push_async_cb(struct bpf_verifier_env *env,
 	elem->log_pos = env->log.end_pos;
 	env->head = elem;
 	env->stack_size++;
-	if (env->stack_size > BPF_COMPLEXITY_LIMIT_JMP_SEQ) {
+	if (env->stack_size > bpf_complexity_limit_jmp_seq) {
 		verbose(env,
 			"The sequence of %d jumps is too complex for async cb.\n",
 			env->stack_size);
