@@ -11546,7 +11546,6 @@ enum {
 	REASON_TYPE	= -2,
 	REASON_PATHS	= -3,
 	REASON_LIMIT	= -4,
-	REASON_STACK	= -5,
 };
 
 static int retrieve_ptr_limit(const struct bpf_reg_state *ptr_reg,
@@ -11742,7 +11741,7 @@ do_sim:
 					env->insn_idx);
 	if (!ptr_is_dst_reg && !err)
 		*dst_reg = tmp;
-	return (err == -ENOMEM || err == -EFAULT) ? REASON_STACK : err;
+	return err;
 }
 
 static void sanitize_mark_insn_seen(struct bpf_verifier_env *env)
@@ -11792,17 +11791,12 @@ static int sanitize_err(struct bpf_verifier_env *env,
 		aux->nospec_v1_result = true;
 		aux->alu_state = 0;
 		return 0;
-	case REASON_STACK:
-		verbose(env, "R%d could not be pushed for speculative verification, %s\n",
-			dst, err);
-		break;
 	default:
-		verbose(env, "verifier internal error: unknown reason (%d)\n",
-			reason);
 		break;
 	}
 
-	return -EACCES;
+	WARN_ON_ONCE(reason >= 0);
+	return reason;
 }
 
 /* check that stack access falls within stack limits and that 'reg' doesn't
