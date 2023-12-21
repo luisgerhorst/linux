@@ -6624,6 +6624,8 @@ static int check_atomic(struct bpf_verifier_env *env, int insn_idx, struct bpf_i
 	return 0;
 }
 
+static struct bpf_insn_aux_data *cur_aux(struct bpf_verifier_env *env);
+
 /* When register 'regno' is used to read the stack (either directly or through
  * a helper function) make sure that it's within stack boundary and, depending
  * on the access type, that all elements of the stack are initialized.
@@ -6678,12 +6680,8 @@ static int check_stack_range_initialized(
 		 * See also retrieve_ptr_limit().
 		 */
 		if (!env->bypass_spec_v1) {
-			char tn_buf[48];
-
-			tnum_strn(tn_buf, sizeof(tn_buf), reg->var_off);
-			verbose(env, "R%d%s variable offset stack access prohibited for !root, var_off=%s\n",
-				regno, err_extra, tn_buf);
-			return -EACCES;
+			/* Variable offset stack access prohibited for !root. */
+			cur_aux(env)->nospec_v1 = true;
 		}
 		/* Only initialized buffer on stack is allowed to be accessed
 		 * with variable offset. With uninitialized buffer it's hard to
