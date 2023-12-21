@@ -2416,7 +2416,9 @@ static inline bool bpf_allow_uninit_stack(const struct bpf_token *token)
 	return bpf_token_capable(token, CAP_PERFMON);
 }
 
+extern int bpf_complexity_limit_jmp_seq;
 extern int bpf_spec_v1;
+extern int bpf_spec_v1_complexity_limit_jmp_seq;
 extern int bpf_spec_v4;
 
 static inline bool bpf_bypass_spec_v1(const struct bpf_token *token)
