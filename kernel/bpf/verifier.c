@@ -11770,9 +11770,11 @@ static int sanitize_err(struct bpf_verifier_env *env,
 
 	switch (reason) {
 	case REASON_BOUNDS:
-		verbose(env, "R%d has unknown scalar with mixed signed bounds, %s\n",
-			off_reg == dst_reg ? dst : src, err);
-		break;
+		/* Register has unknown scalar with mixed signed bounds. */
+		WARN_ON_ONCE(env->cur_state->speculative);
+		aux->nospec_v1_result = true;
+		aux->alu_state = 0;
+		return 0;
 	case REASON_TYPE:
 		/* Register has pointer with unsupported alu operation. */
 		aux->nospec_v1_result = true;
