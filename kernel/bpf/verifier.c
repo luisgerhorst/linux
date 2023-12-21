@@ -11787,9 +11787,11 @@ static int sanitize_err(struct bpf_verifier_env *env,
 		aux->alu_state = 0;
 		return 0;
 	case REASON_LIMIT:
-		verbose(env, "R%d tried to %s beyond pointer bounds, %s\n",
-			dst, op, err);
-		break;
+		/* Register tried access beyond pointer bounds. */
+		WARN_ON_ONCE(env->cur_state->speculative);
+		aux->nospec_v1_result = true;
+		aux->alu_state = 0;
+		return 0;
 	case REASON_STACK:
 		verbose(env, "R%d could not be pushed for speculative verification, %s\n",
 			dst, err);
