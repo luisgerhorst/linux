@@ -58,7 +58,9 @@ static DEFINE_SPINLOCK(link_idr_lock);
 int sysctl_unprivileged_bpf_disabled __read_mostly =
 	IS_BUILTIN(CONFIG_BPF_UNPRIV_DEFAULT_OFF) ? 2 : 0;
 
+int bpf_complexity_limit_jmp_seq = 8192;
 int bpf_spec_v1 = 0;
+int bpf_spec_v1_complexity_limit_jmp_seq = 4096;
 int bpf_spec_v4 = 0;
 
 static const struct bpf_map_ops * const bpf_map_types[] = {
@@ -5485,6 +5487,13 @@ static struct ctl_table bpf_syscall_table[] = {
 		.proc_handler	= bpf_stats_handler,
 	},
 	{
+		.procname	= "bpf_complexity_limit_jmp_seq",
+		.data		= &bpf_complexity_limit_jmp_seq,
+		.maxlen		= sizeof(bpf_complexity_limit_jmp_seq),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec,
+	},
+	{
 		.procname	= "bpf_spec_v1",
 		.data		= &bpf_spec_v1,
 		.maxlen		= sizeof(bpf_spec_v1),
@@ -5492,6 +5501,13 @@ static struct ctl_table bpf_syscall_table[] = {
 		.proc_handler	= proc_dointvec, /* TODO: minmax with the following causes kernel panic */
 		/* .extra1		= SYSCTL_ZERO, */
 		/* .extra2		= SYSCTL_ONE, */
+	},
+	{
+		.procname	= "bpf_spec_v1_complexity_limit_jmp_seq",
+		.data		= &bpf_spec_v1_complexity_limit_jmp_seq,
+		.maxlen		= sizeof(bpf_spec_v1_complexity_limit_jmp_seq),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec,
 	},
 	{
 		.procname	= "bpf_spec_v4",

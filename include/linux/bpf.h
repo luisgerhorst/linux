@@ -2053,7 +2053,9 @@ static inline bool bpf_allow_uninit_stack(void)
 	return perfmon_capable();
 }
 
+extern int bpf_complexity_limit_jmp_seq;
 extern int bpf_spec_v1;
+extern int bpf_spec_v1_complexity_limit_jmp_seq;
 extern int bpf_spec_v4;
 
 static inline bool bpf_bypass_spec_v1(void)
