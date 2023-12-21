@@ -17631,6 +17631,37 @@ static int convert_ctx_accesses(struct bpf_verifier_env *env)
 	for (i = 0; i < insn_cnt; i++, insn++) {
 		bpf_convert_ctx_access_t convert_ctx_access;
 
+		if (env->insn_aux_data[i + delta].nospec_v1) {
+			/* TODO: Check that previous instruction is not already
+			 * a nospec. Or even better, insert the lfence only at
+			 * the beginning of the basic block. */
+			struct bpf_insn patch[] = {
+				BPF_ST_NOSPEC_V1(),
+				*insn,
+			};
+			cnt = ARRAY_SIZE(patch);
+			new_prog = bpf_patch_insn_data(env, i + delta, patch, cnt);
+			if (!new_prog)
+				return -ENOMEM;
+			delta    += cnt - 1;
+			env->prog = new_prog;
+			insn      = new_prog->insnsi + i + delta;
+		}
+
+		if (env->insn_aux_data[i + delta].nospec_v1_result) {
+			struct bpf_insn patch[] = {
+				*insn,
+				BPF_ST_NOSPEC_V1(),
+			};
+			cnt = ARRAY_SIZE(patch);
+			new_prog = bpf_patch_insn_data(env, i + delta, patch, cnt);
+			if (!new_prog)
+				return -ENOMEM;
+			delta    += cnt - 1;
+			env->prog = new_prog;
+			insn      = new_prog->insnsi + i + delta;
+		}
+
 		if (insn->code == (BPF_LDX | BPF_MEM | BPF_B) ||
 		    insn->code == (BPF_LDX | BPF_MEM | BPF_H) ||
 		    insn->code == (BPF_LDX | BPF_MEM | BPF_W) ||
