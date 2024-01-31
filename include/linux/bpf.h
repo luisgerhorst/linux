@@ -1978,7 +1978,7 @@ struct bpf_array {
 	};
 };
 
-#define BPF_COMPLEXITY_LIMIT_INSNS      1000000 /* yes. 1M insns */
+extern int bpf_complexity_limit_insns;
 #define MAX_TAIL_CALL_CNT 33
 
 /* Maximum number of loops for bpf_loop and bpf_iter_num.
