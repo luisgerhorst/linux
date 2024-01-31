@@ -62,6 +62,7 @@ static DEFINE_SPINLOCK(link_idr_lock);
 int sysctl_unprivileged_bpf_disabled __read_mostly =
 	IS_BUILTIN(CONFIG_BPF_UNPRIV_DEFAULT_OFF) ? 2 : 0;
 
+int bpf_complexity_limit_insns = 1000000; /* yes. 1M insns */
 int bpf_complexity_limit_jmp_seq = 8192;
 int bpf_spec_v1 = 1;
 int bpf_spec_v1_complexity_limit_jmp_seq = 4096;
@@ -2803,7 +2804,7 @@ static int bpf_prog_load(union bpf_attr *attr, bpfptr_t uattr, u32 uattr_size)
 		goto put_token;
 
 	if (attr->insn_cnt == 0 ||
-	    attr->insn_cnt > (bpf_cap ? BPF_COMPLEXITY_LIMIT_INSNS : BPF_MAXINSNS)) {
+	    attr->insn_cnt > (bpf_cap ? bpf_complexity_limit_insns : BPF_MAXINSNS)) {
 		err = -E2BIG;
 		goto put_token;
 	}
@@ -6149,6 +6150,13 @@ static const struct ctl_table bpf_syscall_table[] = {
 		.data		= &bpf_stats_enabled_key.key,
 		.mode		= 0644,
 		.proc_handler	= bpf_stats_handler,
+	},
+	{
+		.procname	= "bpf_complexity_limit_insns",
+		.data		= &bpf_complexity_limit_insns,
+		.maxlen		= sizeof(bpf_complexity_limit_insns),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec,
 	},
 	{
 		.procname	= "bpf_complexity_limit_jmp_seq",
