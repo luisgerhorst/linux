@@ -19229,7 +19229,7 @@ static int do_check(struct bpf_verifier_env *env)
 
 		insn = &insns[env->insn_idx];
 
-		if (++env->insn_processed > BPF_COMPLEXITY_LIMIT_INSNS) {
+		if (++env->insn_processed > bpf_complexity_limit_insns) {
 			verbose(env,
 				"BPF program is too large. Processed %d insn\n",
 				env->insn_processed);
@@ -22483,7 +22483,7 @@ static void print_verification_stats(struct bpf_verifier_env *env)
 	}
 	verbose(env, "processed %d insns (limit %d) max_states_per_insn %d "
 		"total_states %d peak_states %d mark_read %d\n",
-		env->insn_processed, BPF_COMPLEXITY_LIMIT_INSNS,
+		env->insn_processed, bpf_complexity_limit_insns,
 		env->max_states_per_insn, env->total_states,
 		env->peak_states, env->longest_mark_read_walk);
 }
