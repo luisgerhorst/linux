@@ -11762,9 +11762,6 @@ static int sanitize_err(struct bpf_verifier_env *env,
 			const struct bpf_reg_state *off_reg,
 			const struct bpf_reg_state *dst_reg)
 {
-	static const char *err = "pointer arithmetic with it prohibited for !root";
-	const char *op = BPF_OP(insn->code) == BPF_ADD ? "add" : "sub";
-	u32 dst = insn->dst_reg, src = insn->src_reg;
 	struct bpf_insn_aux_data *aux = cur_aux(env);
 
 	switch (reason) {
