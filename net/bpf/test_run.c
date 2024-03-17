@@ -521,13 +521,18 @@ static int bpf_test_run_xdp(struct bpf_prog *prog, void *ctx, u32 repeat,
 		struct bpfbox_xdp_buff *new_xdp = NULL;
 		void *pkt = NULL;
 		long maxoff;
+		void *old_data = NULL;
+		memcpy(ctx, xdp, sizeof(struct xdp_buff));
+		memcpy(xdp->data_hard_start, packet, PAGE_SIZE);
 		maxoff = prog->max_pkt_offset;
 		pkt = xdp_setup_packet_buffer(ctx);
 		new_xdp = xdp_setup_context(ctx, pkt, maxoff);
+		old_data = new_xdp->data;
 		start = rdtsc_ordered();
 		*retval = __bpf_prog_run(prog, bpf_box_ptr(new_xdp), BPF_DISPATCHER_FUNC(xdp));
 		total += rdtsc_ordered() - start;
-		kernel_close_bpf_scratch(sizeof(struct xdp_buff) + PAGE_SIZE);
+		maxoff += (old_data - new_xdp->data);
+		xdp_teardown_context(new_xdp, ctx, maxoff);
 #else
 		total += rdtsc_ordered() - start;
 		memcpy(ctx, xdp, sizeof(struct xdp_buff));
