@@ -48,7 +48,7 @@ void bpfbox_free_pcpu(void *p)
 DEFINE_PER_CPU(struct bpfbox_scratch_region, bpfbox_scratch_region);
 EXPORT_PER_CPU_SYMBOL(bpfbox_scratch_region);
 
-#define BPF_SCRATCH_SIZE_PAGE 512
+#define BPF_SCRATCH_SIZE_PAGE 70
 
 int __init init_bpfbox_stack(void)
 {
