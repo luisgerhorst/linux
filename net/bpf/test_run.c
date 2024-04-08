@@ -476,8 +476,10 @@ static int bpf_test_run_xdp(struct bpf_prog *prog, void *ctx, u32 repeat,
 		item = {.prog = prog};
 	struct bpf_run_ctx *old_ctx;
 	struct bpf_cg_run_ctx run_ctx;
-	struct xdp_buff *xdp;
-	void *packet;
+	struct xdp_buff *backup_xdp;
+	void *backup_packet;
+	struct bpfbox_xdp_buff *new_xdp = NULL;
+	void *pkt = NULL;
 	/* struct bpf_test_timer t = { NO_MIGRATE }; */
 	enum bpf_cgroup_storage_type stype;
 	int i;
@@ -497,16 +499,19 @@ static int bpf_test_run_xdp(struct bpf_prog *prog, void *ctx, u32 repeat,
 
 	/* prefetch(&prog->aux->ctx_access_cnt); */
 
-	packet = kmalloc(PAGE_SIZE, GFP_USER);
-	if (!packet)
+	pkt = xdp_setup_packet_buffer(ctx);
+	new_xdp = xdp_setup_context(ctx, pkt, PAGE_SIZE);
+
+	backup_packet = kmalloc(PAGE_SIZE, GFP_USER);
+	if (!backup_packet)
 		BUG();
 
-	xdp = kmalloc(sizeof(struct xdp_buff), GFP_USER);
-	if (!xdp)
+	backup_xdp = kmalloc(sizeof(struct xdp_buff), GFP_USER);
+	if (!backup_xdp)
 		BUG();
 
-	memcpy(xdp, ctx, sizeof(struct xdp_buff));
-	memcpy(packet, xdp->data_hard_start, PAGE_SIZE);
+	memcpy(backup_xdp, new_xdp, sizeof(struct xdp_buff));
+	memcpy(backup_packet, pkt, PAGE_SIZE);
 	preempt_disable();
 
 	if (!repeat)
@@ -518,21 +523,11 @@ static int bpf_test_run_xdp(struct bpf_prog *prog, void *ctx, u32 repeat,
 	start = rdtsc_ordered();
 	for (i = 0; i < repeat; i++) {
 #ifdef CONFIG_BPFBOX_XDP_NOCOPY
-		struct bpfbox_xdp_buff *new_xdp = NULL;
-		void *pkt = NULL;
-		long maxoff;
-		void *old_data = NULL;
-		memcpy(ctx, xdp, sizeof(struct xdp_buff));
-		memcpy(xdp->data_hard_start, packet, PAGE_SIZE);
-		maxoff = prog->max_pkt_offset;
-		pkt = xdp_setup_packet_buffer(ctx);
-		new_xdp = xdp_setup_context(ctx, pkt, maxoff);
-		old_data = new_xdp->data;
+		memcpy(new_xdp, backup_xdp, sizeof(struct xdp_buff));
+		memcpy(pkt, backup_packet, PAGE_SIZE);
 		start = rdtsc_ordered();
 		*retval = __bpf_prog_run(prog, bpf_box_ptr(new_xdp), BPF_DISPATCHER_FUNC(xdp));
 		total += rdtsc_ordered() - start;
-		maxoff += (old_data - new_xdp->data);
-		xdp_teardown_context(new_xdp, ctx, maxoff);
 #else
 		total += rdtsc_ordered() - start;
 		memcpy(ctx, xdp, sizeof(struct xdp_buff));
@@ -547,6 +542,7 @@ static int bpf_test_run_xdp(struct bpf_prog *prog, void *ctx, u32 repeat,
 	total += rdtsc_ordered() - start;
 	bpf_reset_run_ctx(old_ctx);
 
+	xdp_teardown_context(new_xdp, ctx, PAGE_SIZE);
 	local_irq_restore(flag);
 	*time = total / repeat;
 
@@ -554,8 +550,8 @@ static int bpf_test_run_xdp(struct bpf_prog *prog, void *ctx, u32 repeat,
 		bpf_cgroup_storage_free(item.cgroup_storage[stype]);
 
 	preempt_enable();
-	kfree(packet);
-	kfree(xdp);
+	kfree(backup_packet);
+	kfree(backup_xdp);
 	return 0;
 }
 
