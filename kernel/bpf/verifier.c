@@ -1026,7 +1026,7 @@ static void __mark_reg_unknown(const struct bpf_verifier_env *env,
 
 static void mark_reg_invalid(const struct bpf_verifier_env *env, struct bpf_reg_state *reg)
 {
-	if (!env->allow_ptr_leaks)
+	if (!(env->allow_ptr_leaks && !env->cur_state->speculative))
 		__mark_reg_not_init(env, reg);
 	else
 		__mark_reg_unknown(env, reg);
@@ -3416,7 +3416,7 @@ static int backtrack_insn(struct bpf_verifier_env *env, int idx, int subseq_idx,
 		fmt_stack_mask(env->tmp_str_buf, TMP_STR_BUF_LEN, bt_stack_mask(bt));
 		verbose(env, "stack=%s before ", env->tmp_str_buf);
 		verbose(env, "%d: ", idx);
-		print_bpf_insn(&cbs, insn, env->allow_ptr_leaks);
+		print_bpf_insn(&cbs, insn, (env->allow_ptr_leaks && !env->cur_state->speculative));
 	}
 
 	if (class == BPF_ALU || class == BPF_ALU64) {
@@ -4302,7 +4302,7 @@ static int check_stack_write_fixed_off(struct bpf_verifier_env *env,
 	/* caller checked that off % size == 0 and -MAX_BPF_STACK <= off < 0,
 	 * so it's aligned access and [off, off + size) are within stack limits
 	 */
-	if (!env->allow_ptr_leaks &&
+	if (!(env->allow_ptr_leaks && !env->cur_state->speculative) &&
 	    state->stack[spi].slot_type[0] == STACK_SPILL &&
 	    size != BPF_REG_SIZE) {
 		verbose(env, "attempt to corrupt spilled pointer on stack\n");
@@ -4477,7 +4477,7 @@ static int check_stack_write_var_off(struct bpf_verifier_env *env,
 		stype = &state->stack[spi].slot_type[slot % BPF_REG_SIZE];
 		mark_stack_slot_scratched(env, spi);
 
-		if (!env->allow_ptr_leaks && *stype != STACK_MISC && *stype != STACK_ZERO) {
+		if (!(env->allow_ptr_leaks && !env->cur_state->speculative) && *stype != STACK_MISC && *stype != STACK_ZERO) {
 			/* Reject the write if range we may write to has not
 			 * been initialized beforehand. If we didn't reject
 			 * here, the ptr status would be erased below (even
@@ -4655,7 +4655,7 @@ static int check_stack_read_fixed_off(struct bpf_verifier_env *env,
 			 * which resets stack/reg liveness for state transitions
 			 */
 			state->regs[dst_regno].live |= REG_LIVE_WRITTEN;
-		} else if (__is_pointer_value(env->allow_ptr_leaks, reg)) {
+		} else if (__is_pointer_value((env->allow_ptr_leaks && !env->cur_state->speculative), reg)) {
 			/* If dst_regno==-1, the caller is asking us whether
 			 * it is acceptable to use this value as a SCALAR_VALUE
 			 * (e.g. for XADD).
@@ -5384,7 +5384,7 @@ static int check_sock_access(struct bpf_verifier_env *env, int insn_idx,
 
 static bool is_pointer_value(struct bpf_verifier_env *env, int regno)
 {
-	return __is_pointer_value(env->allow_ptr_leaks, reg_state(env, regno));
+	return __is_pointer_value((env->allow_ptr_leaks && !env->cur_state->speculative), reg_state(env, regno));
 }
 
 static bool is_ctx_reg(struct bpf_verifier_env *env, int regno)
@@ -5987,7 +5987,7 @@ static int check_ptr_to_btf_access(struct bpf_verifier_env *env,
 	u32 btf_id = 0;
 	int ret;
 
-	if (!env->allow_ptr_leaks) {
+	if (!(env->allow_ptr_leaks && !env->cur_state->speculative)) {
 		verbose(env,
 			"'struct %s' access is allowed only to CAP_PERFMON and CAP_SYS_ADMIN\n",
 			tname);
@@ -6150,7 +6150,7 @@ static int check_ptr_to_map_access(struct bpf_verifier_env *env,
 	t = btf_type_by_id(btf_vmlinux, *map->ops->map_btf_id);
 	tname = btf_name_by_offset(btf_vmlinux, t->name_off);
 
-	if (!env->allow_ptr_leaks) {
+	if (!(env->allow_ptr_leaks && !env->cur_state->speculative)) {
 		verbose(env,
 			"'struct %s' access is allowed only to CAP_PERFMON and CAP_SYS_ADMIN\n",
 			tname);
@@ -6742,7 +6742,7 @@ static int check_stack_range_initialized(
 
 		if (is_spilled_reg(&state->stack[spi]) &&
 		    (state->stack[spi].spilled_ptr.type == SCALAR_VALUE ||
-		     env->allow_ptr_leaks)) {
+		     (env->allow_ptr_leaks && !env->cur_state->speculative))) {
 			if (clobber) {
 				__mark_reg_unknown(env, &state->stack[spi].spilled_ptr);
 				for (j = 0; j < BPF_REG_SIZE; j++)
@@ -11855,7 +11855,7 @@ static int sanitize_check_bounds(struct bpf_verifier_env *env,
 /* Handles arithmetic on a pointer and a scalar: computes new min/max and var_off.
  * Caller should also handle BPF_MOV case separately.
  * If we return -EACCES, caller may want to try again treating pointer as a
- * scalar.  So we only emit a diagnostic if !env->allow_ptr_leaks.
+ * scalar.  So we only emit a diagnostic if !(env->allow_ptr_leaks && !env->cur_state->speculative).
  */
 static int adjust_ptr_min_max_vals(struct bpf_verifier_env *env,
 				   struct bpf_insn *insn,
@@ -11888,7 +11888,7 @@ static int adjust_ptr_min_max_vals(struct bpf_verifier_env *env,
 
 	if (BPF_CLASS(insn->code) != BPF_ALU64) {
 		/* 32-bit ALU ops on pointers produce (meaningless) scalars */
-		if (opcode == BPF_SUB && env->allow_ptr_leaks) {
+		if (opcode == BPF_SUB && (env->allow_ptr_leaks && !env->cur_state->speculative)) {
 			__mark_reg_unknown(env, dst_reg);
 			return 0;
 		}
@@ -12842,7 +12842,7 @@ static int adjust_reg_min_max_vals(struct bpf_verifier_env *env,
 				 * an arbitrary scalar. Disallow all math except
 				 * pointer subtraction
 				 */
-				if (opcode == BPF_SUB && env->allow_ptr_leaks) {
+				if (opcode == BPF_SUB && (env->allow_ptr_leaks && !env->cur_state->speculative)) {
 					mark_reg_unknown(env, regs, insn->dst_reg);
 					return 0;
 				}
@@ -16289,7 +16289,7 @@ static int do_check(struct bpf_verifier_env *env)
 			verbose_linfo(env, env->insn_idx, "; ");
 			env->prev_log_pos = env->log.end_pos;
 			verbose(env, "%d: ", env->insn_idx);
-			print_bpf_insn(&cbs, insn, env->allow_ptr_leaks);
+			print_bpf_insn(&cbs, insn, (env->allow_ptr_leaks && !env->cur_state->speculative));
 			env->prev_insn_print_pos = env->log.end_pos - env->prev_log_pos;
 			env->prev_log_pos = env->log.end_pos;
 		}
