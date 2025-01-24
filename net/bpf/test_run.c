@@ -22,6 +22,7 @@
 #include <linux/netfilter.h>
 #include <net/xdp.h>
 #include <net/netfilter/nf_bpf_link.h>
+#include <asm/irqflags.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/bpf_test_run.h>
@@ -41,7 +42,11 @@ static void bpf_test_timer_enter(struct bpf_test_timer *t)
 	else
 		migrate_disable();
 
+#ifdef CONFIG_X86_64
+	t->time_start = rdtsc_ordered();
+#else
 	t->time_start = ktime_get_ns();
+#endif
 }
 
 static void bpf_test_timer_leave(struct bpf_test_timer *t)
@@ -56,33 +61,56 @@ static void bpf_test_timer_leave(struct bpf_test_timer *t)
 	rcu_read_unlock();
 }
 
-static bool bpf_test_timer_continue(struct bpf_test_timer *t, int iterations,
-				    u32 repeat, int *err, u32 *duration)
+static bool __bpf_test_timer_continue(struct bpf_test_timer *t, int iterations,
+				    u32 repeat, int *err, u32 *duration,
+				    void *ctx_use, void *ctx_orig,
+				    void *packet, bool xdp)
 	__must_hold(rcu)
 {
 	t->i += iterations;
 	if (t->i >= repeat) {
 		/* We're done. */
+#ifdef CONFIG_X86_64
+		t->time_spent += rdtsc_ordered() - t->time_start;
+#else
 		t->time_spent += ktime_get_ns() - t->time_start;
-		do_div(t->time_spent, t->i);
+#endif
+		/* do_div(t->time_spent, t->i); */
+		t->time_spent = t->time_spent / t->i;
 		*duration = t->time_spent > U32_MAX ? U32_MAX : (u32)t->time_spent;
 		*err = 0;
 		goto reset;
 	}
 
-	if (signal_pending(current)) {
-		/* During iteration: we've been cancelled, abort. */
-		*err = -EINTR;
-		goto reset;
-	}
+	/* if (signal_pending(current)) { */
+	/* 	/\* During iteration: we've been cancelled, abort. *\/ */
+	/* 	*err = -EINTR; */
+	/* 	goto reset; */
+	/* } */
 
-	if (need_resched()) {
-		/* During iteration: we need to reschedule between runs. */
-		t->time_spent += ktime_get_ns() - t->time_start;
-		bpf_test_timer_leave(t);
-		cond_resched();
-		bpf_test_timer_enter(t);
+#ifdef CONFIG_X86_64
+	t->time_spent += rdtsc_ordered() - t->time_start;
+#else
+	t->time_spent += ktime_get_ns() - t->time_start;
+#endif
+	bpf_test_timer_leave(t);
+	/* if (need_resched()) { */
+	/* 	/\* During iteration: we need to reschedule between runs. *\/ */
+	/* 	cond_resched(); */
+	/* } */
+	/* reset context */
+	if (xdp && ctx_use && ctx_orig && packet) {
+		struct xdp_buff *ctx = ctx_use;
+		struct xdp_buff *xdp_ctx_orig = ctx_orig;
+		int size = xdp_ctx_orig->data_end - xdp_ctx_orig->data_hard_start + 1;
+		memcpy(ctx, xdp_ctx_orig, sizeof(struct xdp_buff));
+		ctx->data_end        = packet + (ctx->data_end - ctx->data_hard_start);
+		ctx->data            = packet + (ctx->data - ctx->data_hard_start);
+		ctx->data_meta       = packet + (ctx->data_meta - ctx->data_hard_start);
+		ctx->data_hard_start = packet;
+		memcpy(packet, ((struct xdp_buff*)xdp_ctx_orig)->data_hard_start, size);
 	}
+	bpf_test_timer_enter(t);
 
 	/* Do another round. */
 	return true;
@@ -90,6 +118,14 @@ static bool bpf_test_timer_continue(struct bpf_test_timer *t, int iterations,
 reset:
 	t->i = 0;
 	return false;
+}
+
+static bool bpf_test_timer_continue(struct bpf_test_timer *t, int iterations,
+				    u32 repeat, int *err, u32 *duration)
+	__must_hold(rcu)
+{
+	return __bpf_test_timer_continue(t, iterations, repeat, err, duration,
+					 NULL, NULL, NULL, false);
 }
 
 /* We put this struct at the head of each page with a context and frame
@@ -386,6 +422,121 @@ static int bpf_test_run_xdp_live(struct bpf_prog *prog, struct xdp_buff *ctx,
 
 	xdp_test_run_teardown(&xdp);
 	return ret;
+}
+
+static int bpf_test_run_xdp(struct bpf_prog *prog, void *ctx, u32 repeat,
+			u32 *retval, u32 *time)
+{
+	struct bpf_prog_array_item
+		item = {.prog = prog};
+	struct bpf_run_ctx *old_ctx;
+	struct bpf_cg_run_ctx run_ctx;
+	struct xdp_buff *xdp;
+	void *packet;
+	/* struct bpf_test_timer t = { NO_MIGRATE }; */
+	enum bpf_cgroup_storage_type stype;
+	int i;
+	long start, total = 0;
+	unsigned long flag;
+
+	BUG_ON(prog->type != BPF_PROG_TYPE_XDP && prog->type != BPF_PROG_TYPE_SOCKET_FILTER);
+	for_each_cgroup_storage_type(stype) {
+		item.cgroup_storage[stype] = bpf_cgroup_storage_alloc(prog, stype);
+		if (IS_ERR(item.cgroup_storage[stype])) {
+			item.cgroup_storage[stype] = NULL;
+			for_each_cgroup_storage_type(stype)
+				bpf_cgroup_storage_free(item.cgroup_storage[stype]);
+			return -ENOMEM;
+		}
+	}
+
+	/* prefetch(&prog->aux->ctx_access_cnt); */
+
+	packet = kmalloc(PAGE_SIZE, GFP_USER);
+	if (!packet)
+		BUG();
+
+	xdp = kmalloc(sizeof(struct xdp_buff), GFP_USER);
+	if (!xdp)
+		BUG();
+
+	memcpy(xdp, ctx, sizeof(struct xdp_buff));
+	memcpy(packet, xdp->data_hard_start, PAGE_SIZE);
+	preempt_disable();
+
+	if (!repeat)
+		repeat = 1;
+
+	local_irq_save(flag);
+	old_ctx = bpf_set_run_ctx(&run_ctx.run_ctx);
+
+	start = rdtsc_ordered();
+	for (i = 0; i < repeat; i++) {
+		total += rdtsc_ordered() - start;
+		memcpy(ctx, xdp, sizeof(struct xdp_buff));
+		memcpy(((struct xdp_buff*)ctx)->data_hard_start, packet, PAGE_SIZE);
+		start = rdtsc_ordered();
+		run_ctx.prog_item = &item;
+		*retval = bpf_prog_run_xdp(prog, ctx);
+	}
+	total += rdtsc_ordered() - start;
+	bpf_reset_run_ctx(old_ctx);
+
+	local_irq_restore(flag);
+	*time = total / repeat;
+
+	for_each_cgroup_storage_type(stype)
+		bpf_cgroup_storage_free(item.cgroup_storage[stype]);
+
+	preempt_enable();
+	kfree(packet);
+	kfree(xdp);
+	return 0;
+}
+
+static int bpf_test_run_skb(struct bpf_prog *prog, void *ctx, u32 repeat,
+			u32 *retval, u32 *time)
+{
+	struct bpf_prog_array_item
+		item = {.prog = prog};
+	struct bpf_run_ctx *old_ctx;
+	struct bpf_cg_run_ctx run_ctx;
+	/* struct bpf_test_timer t = { NO_MIGRATE }; */
+	enum bpf_cgroup_storage_type stype;
+	long start, total = 0;
+	unsigned long flag;
+	int i;
+
+	BUG_ON(prog->type != BPF_PROG_TYPE_XDP && prog->type != BPF_PROG_TYPE_SOCKET_FILTER);
+	for_each_cgroup_storage_type(stype) {
+		item.cgroup_storage[stype] = bpf_cgroup_storage_alloc(prog, stype);
+		if (IS_ERR(item.cgroup_storage[stype])) {
+			item.cgroup_storage[stype] = NULL;
+			for_each_cgroup_storage_type(stype)
+				bpf_cgroup_storage_free(item.cgroup_storage[stype]);
+			return -ENOMEM;
+		}
+	}
+
+	preempt_disable();
+	local_irq_save(flag);
+	if (!repeat)
+		repeat = 1;
+
+	old_ctx = bpf_set_run_ctx(&run_ctx.run_ctx);
+	for (i = 0; i < repeat; i++) {
+		start = rdtsc_ordered();
+		*retval = bpf_prog_run(prog, ctx);
+		total += rdtsc_ordered() - start;
+	}
+	*time = total / repeat;
+	bpf_reset_run_ctx(old_ctx);
+	local_irq_restore(flag);
+	for_each_cgroup_storage_type(stype)
+		bpf_cgroup_storage_free(item.cgroup_storage[stype]);
+
+	preempt_enable();
+	return 0;
 }
 
 static int bpf_test_run(struct bpf_prog *prog, void *ctx, u32 repeat,
@@ -1025,7 +1176,7 @@ int bpf_prog_test_run_skb(struct bpf_prog *prog, const union bpf_attr *kattr,
 	ret = convert___skb_to_skb(skb, ctx);
 	if (ret)
 		goto out;
-	ret = bpf_test_run(prog, skb, repeat, &retval, &duration, false);
+	ret = bpf_test_run_skb(prog, skb, repeat, &retval, &duration);
 	if (ret)
 		goto out;
 	if (!is_l2) {
@@ -1236,7 +1387,7 @@ int bpf_prog_test_run_xdp(struct bpf_prog *prog, const union bpf_attr *kattr,
 	if (do_live)
 		ret = bpf_test_run_xdp_live(prog, &xdp, repeat, batch_size, &duration);
 	else
-		ret = bpf_test_run(prog, &xdp, repeat, &retval, &duration, true);
+		ret = bpf_test_run_xdp(prog, &xdp, repeat, &retval, &duration);
 	/* We convert the xdp_buff back to an xdp_md before checking the return
 	 * code so the reference count of any held netdevice will be decremented
 	 * even if the test run failed.
