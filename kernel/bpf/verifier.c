@@ -12862,7 +12862,9 @@ static int adjust_reg_min_max_vals(struct bpf_verifier_env *env,
 				 * an arbitrary scalar. Disallow all math except
 				 * pointer subtraction
 				 */
-				if (opcode == BPF_SUB && (env->allow_ptr_leaks && !env->cur_state->speculative)) {
+				if ((opcode == BPF_SUB && (env->allow_ptr_leaks && !env->cur_state->speculative)) ||
+				    (reg_is_pkt_pointer_any(dst_reg) &&
+				     reg_is_pkt_pointer_any(src_reg))) {
 					mark_reg_unknown(env, regs, insn->dst_reg);
 					return 0;
 				}
@@ -14066,6 +14068,9 @@ static int check_cond_jmp_op(struct bpf_verifier_env *env,
 				      opcode == BPF_JNE);
 		mark_ptr_or_null_regs(other_branch, insn->dst_reg,
 				      opcode == BPF_JEQ);
+	} else if (BPF_SRC(insn->code) == BPF_K &&
+		insn->imm == 0 && (opcode == BPF_JEQ || opcode == BPF_JNE)) {
+		
 	} else if (!try_match_pkt_pointers(insn, dst_reg, &regs[insn->src_reg],
 					   this_branch, other_branch) &&
 		   is_pointer_value(env, insn->dst_reg)) {
