@@ -829,6 +829,18 @@ static __always_inline u64 notrace bpf_prog_start_time(void)
 		if (unlikely(!start))
 			start = NO_START_TIME;
 	}
+
+	if (static_cpu_has(X86_FEATURE_SPEC_CTRL_SSBD) ||
+	    static_cpu_has(X86_FEATURE_AMD_SSBD)) {
+		u64 x86_spec_ctrl_base;
+		rdmsrl(MSR_IA32_SPEC_CTRL, x86_spec_ctrl_base);
+		x86_spec_ctrl_base |= SPEC_CTRL_SSBD;
+		wrmsrl(MSR_IA32_SPEC_CTRL, x86_spec_ctrl_base);
+		pr_err_ratelimited("bpf: temporary ssbd enabled");
+	} else {
+		pr_err_ratelimited("bpf: ssbd not suppported");
+	}
+
 	return start;
 }
 
@@ -864,6 +876,17 @@ static void notrace update_prog_stats(struct bpf_prog *prog,
 				      u64 start)
 {
 	struct bpf_prog_stats *stats;
+
+	if (static_cpu_has(X86_FEATURE_SPEC_CTRL_SSBD) ||
+	    static_cpu_has(X86_FEATURE_AMD_SSBD)) {
+		u64 x86_spec_ctrl_base;
+		rdmsrl(MSR_IA32_SPEC_CTRL, x86_spec_ctrl_base);
+		x86_spec_ctrl_base &= ~SPEC_CTRL_SSBD;
+		wrmsrl(MSR_IA32_SPEC_CTRL, x86_spec_ctrl_base);
+		pr_err_ratelimited("bpf: temporary ssbd ended");
+	} else {
+		pr_err_ratelimited("bpf: ssbd not suppported");
+	}
 
 	if (static_branch_unlikely(&bpf_stats_enabled_key) &&
 	    /* static_key could be enabled in __bpf_prog_enter*
