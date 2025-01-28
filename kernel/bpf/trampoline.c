@@ -13,6 +13,7 @@
 #include <linux/bpf_verifier.h>
 #include <linux/bpf_lsm.h>
 #include <linux/delay.h>
+#include <linux/ratelimit.h>
 
 /* dummy _ops. The verifier will operate on target program's ops. */
 const struct bpf_verifier_ops bpf_extension_verifier_ops = {
@@ -829,6 +830,24 @@ static __always_inline u64 notrace bpf_prog_start_time(void)
 		if (unlikely(!start))
 			start = NO_START_TIME;
 	}
+
+	BUG_ON(static_cpu_has(X86_FEATURE_SPEC_CTRL_SSBD) ||
+	    static_cpu_has(X86_FEATURE_AMD_SSBD));
+	BUG_ON(true);
+	for (volatile int i = 0; i < 1000000; i++) {
+
+	}
+	if (static_cpu_has(X86_FEATURE_SPEC_CTRL_SSBD) ||
+	    static_cpu_has(X86_FEATURE_AMD_SSBD)) {
+		u64 x86_spec_ctrl_base;
+		rdmsrl(MSR_IA32_SPEC_CTRL, x86_spec_ctrl_base);
+		x86_spec_ctrl_base |= SPEC_CTRL_SSBD;
+		wrmsrl(MSR_IA32_SPEC_CTRL, x86_spec_ctrl_base);
+		WARN_RATELIMIT(true, "success");
+	} else {
+		WARN_RATELIMIT(true, "ssbd not enabled");
+	}
+
 	return start;
 }
 
@@ -864,6 +883,16 @@ static void notrace update_prog_stats(struct bpf_prog *prog,
 				      u64 start)
 {
 	struct bpf_prog_stats *stats;
+
+	if (static_cpu_has(X86_FEATURE_SPEC_CTRL_SSBD) ||
+	    static_cpu_has(X86_FEATURE_AMD_SSBD)) {
+		u64 x86_spec_ctrl_base;
+		rdmsrl(MSR_IA32_SPEC_CTRL, x86_spec_ctrl_base);
+		x86_spec_ctrl_base &= ~SPEC_CTRL_SSBD;
+		wrmsrl(MSR_IA32_SPEC_CTRL, x86_spec_ctrl_base);
+	} else {
+		WARN_RATELIMIT(true, "ssbd not enabled");
+	}
 
 	if (static_branch_unlikely(&bpf_stats_enabled_key) &&
 	    /* static_key could be enabled in __bpf_prog_enter*

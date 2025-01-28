@@ -47,6 +47,8 @@ static void bpf_test_timer_enter(struct bpf_test_timer *t)
 #else
 	t->time_start = ktime_get_ns();
 #endif
+
+	BUG_ON(true);
 }
 
 static void bpf_test_timer_leave(struct bpf_test_timer *t)
@@ -473,11 +475,33 @@ static int bpf_test_run_xdp(struct bpf_prog *prog, void *ctx, u32 repeat,
 	start = rdtsc_ordered();
 	for (i = 0; i < repeat; i++) {
 		total += rdtsc_ordered() - start;
+
 		memcpy(ctx, xdp, sizeof(struct xdp_buff));
 		memcpy(((struct xdp_buff*)ctx)->data_hard_start, packet, PAGE_SIZE);
+
+		u64 x86_spec_ctrl_base;
+		rdmsrl(MSR_IA32_SPEC_CTRL, x86_spec_ctrl_base);
+
 		start = rdtsc_ordered();
+
+		if (static_cpu_has(X86_FEATURE_SPEC_CTRL_SSBD) ||
+		    static_cpu_has(X86_FEATURE_AMD_SSBD)) {
+			WARN_ON(x86_spec_ctrl_base & SPEC_CTRL_SSBD);
+			x86_spec_ctrl_base |= SPEC_CTRL_SSBD;
+			wrmsrl(MSR_IA32_SPEC_CTRL, x86_spec_ctrl_base);
+		} else {
+			BUG_ON(true);
+		}
+
 		run_ctx.prog_item = &item;
 		*retval = bpf_prog_run_xdp(prog, ctx);
+
+		if (static_cpu_has(X86_FEATURE_SPEC_CTRL_SSBD) ||
+			static_cpu_has(X86_FEATURE_AMD_SSBD)) {
+			WARN_ON(!(x86_spec_ctrl_base & SPEC_CTRL_SSBD));
+			x86_spec_ctrl_base &= ~SPEC_CTRL_SSBD;
+			wrmsrl(MSR_IA32_SPEC_CTRL, x86_spec_ctrl_base);
+		}
 	}
 	total += rdtsc_ordered() - start;
 	bpf_reset_run_ctx(old_ctx);
@@ -526,6 +550,7 @@ static int bpf_test_run_skb(struct bpf_prog *prog, void *ctx, u32 repeat,
 	old_ctx = bpf_set_run_ctx(&run_ctx.run_ctx);
 	for (i = 0; i < repeat; i++) {
 		start = rdtsc_ordered();
+		BUG_ON(true);
 		*retval = bpf_prog_run(prog, ctx);
 		total += rdtsc_ordered() - start;
 	}
@@ -567,10 +592,30 @@ static int bpf_test_run(struct bpf_prog *prog, void *ctx, u32 repeat,
 	do {
 		run_ctx.prog_item = &item;
 		local_bh_disable();
+
+		if (static_cpu_has(X86_FEATURE_SPEC_CTRL_SSBD) ||
+		    static_cpu_has(X86_FEATURE_AMD_SSBD)) {
+			u64 x86_spec_ctrl_base;
+			rdmsrl(MSR_IA32_SPEC_CTRL, x86_spec_ctrl_base);
+			x86_spec_ctrl_base |= SPEC_CTRL_SSBD;
+			wrmsrl(MSR_IA32_SPEC_CTRL, x86_spec_ctrl_base);
+		} else {
+			BUG_ON(true);
+		}
+
 		if (xdp)
 			*retval = bpf_prog_run_xdp(prog, ctx);
 		else
 			*retval = bpf_prog_run(prog, ctx);
+
+		if (static_cpu_has(X86_FEATURE_SPEC_CTRL_SSBD) ||
+			static_cpu_has(X86_FEATURE_AMD_SSBD)) {
+			u64 x86_spec_ctrl_base;
+			rdmsrl(MSR_IA32_SPEC_CTRL, x86_spec_ctrl_base);
+			x86_spec_ctrl_base &= ~SPEC_CTRL_SSBD;
+			wrmsrl(MSR_IA32_SPEC_CTRL, x86_spec_ctrl_base);
+		}
+
 		local_bh_enable();
 	} while (bpf_test_timer_continue(&t, 1, repeat, &ret, time));
 	bpf_reset_run_ctx(old_ctx);
@@ -842,6 +887,7 @@ __bpf_prog_test_run_raw_tp(void *data)
 	struct bpf_raw_tp_test_run_info *info = data;
 
 	rcu_read_lock();
+	BUG_ON(true);
 	info->retval = bpf_prog_run(info->prog, info->ctx);
 	rcu_read_unlock();
 }
