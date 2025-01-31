@@ -20541,6 +20541,7 @@ static int convert_ctx_accesses(struct bpf_verifier_env *env)
 			continue;
 		}
 
+		/* BUG: This skips inserting nospec after failed sanitization. Do not depend on write insn. */
 		if (type == BPF_WRITE &&
 		    env->insn_aux_data[i + delta].nospec_result) {
 			/* nospec_result is only used to mitigate Spectre v4 and
