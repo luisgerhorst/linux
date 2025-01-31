@@ -1831,7 +1831,7 @@ static int push_stack(struct bpf_verifier_env *env,
 	*branch = NULL;
 
 	if (!env->bypass_spec_v1 && cur->speculative && env->stack_size > bpf_spec_v1_complexity_limit_jmp_seq) {
-		verbose(env, "avoiding spec. push_stack()\n");
+		verbose(env, "avoiding speculative push_stack()\n");
 		return -EACCES;
 	}
 
@@ -16597,7 +16597,8 @@ static int do_check(struct bpf_verifier_env *env)
 		sanitize_mark_insn_seen(env);
 		prev_insn_idx = env->insn_idx;
 
-		if (!env->bypass_spec_v1 && state->speculative && cur_aux(env)->nospec_v1) {
+		if (state->speculative && cur_aux(env)->nospec_v1) {
+			WARN_ON(env->bypass_spec_v1 && env->bypass_spec_v4);
 			err = process_bpf_exit(env, &prev_insn_idx, pop_log, &do_print_state);
 			if (err == CHECK_NEXT_INSN) {
 				continue;
@@ -16617,7 +16618,7 @@ static int do_check(struct bpf_verifier_env *env)
 			break;
 		} else if ((err == -EPERM || err == -EACCES || err == -EINVAL)
 			   && state->speculative) {
-			WARN_ON_ONCE(env->bypass_spec_v1);
+			WARN_ON(env->bypass_spec_v1 && env->bypass_spec_v4);
 			BUG_ON(env->cur_state != state);
 
 			/* Terminate this speculative path forcefully. */
@@ -16638,7 +16639,8 @@ static int do_check(struct bpf_verifier_env *env)
 			return err;
 		}
 
-		if (!env->bypass_spec_v1 && state->speculative && cur_aux(env)->nospec_v1_result) {
+		if (state->speculative && cur_aux(env)->nospec_v1_result) {
+			WARN_ON(env->bypass_spec_v1 && env->bypass_spec_v4);
 			err = process_bpf_exit(env, &prev_insn_idx, pop_log, &do_print_state);
 			if (err == CHECK_NEXT_INSN) {
 				continue;
