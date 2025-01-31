@@ -19325,7 +19325,7 @@ static int do_check(struct bpf_verifier_env *env)
 		} else if (err == ALL_PATHS_CHECKED) {
 			break;
 		} else if (error_recoverable_with_nospec(err) && state->speculative) {
-			WARN_ON_ONCE(env->bypass_spec_v1);
+			WARN_ON_ONCE(env->bypass_spec_v1 && env->bypass_spec_v4);
 			WARN_ON_ONCE(env->cur_state != state);
 
 			/* Prevent this speculative path from ever reaching the
