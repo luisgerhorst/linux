@@ -4931,8 +4931,12 @@ static int check_stack_write_fixed_off(struct bpf_verifier_env *env,
 			}
 		}
 
-		if (sanitize)
-			env->insn_aux_data[insn_idx].nospec_result = true;
+		if (sanitize) {
+			err = sanitize_speculative_path(env, NULL, env->insn_idx + 1,
+							env->insn_idx);
+			if (err)
+				return err;
+		}
 	}
 
 	err = destroy_if_dynptr_stack_slot(env, state, spi);
