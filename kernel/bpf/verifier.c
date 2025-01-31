@@ -4339,7 +4339,7 @@ static int check_stack_write_fixed_off(struct bpf_verifier_env *env,
 
 		if (sanitize) {
 			err = sanitize_speculative_path(env, NULL, env->insn_idx + 1,
-											env->insn_idx);
+							env->insn_idx);
 			if (err)
 				return err;
 		}
