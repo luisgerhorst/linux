@@ -16621,7 +16621,7 @@ static int do_check(struct bpf_verifier_env *env)
 			WARN_ON(env->bypass_spec_v1 && env->bypass_spec_v4);
 			BUG_ON(env->cur_state != state);
 
-			/* Terminate this speculative path forcefully. */
+			verbose(env, "terminating spec. path with nospec before prohibited instruction");
 			cur_aux(env)->nospec_v1 = true;
 
 			err = process_bpf_exit(env, &prev_insn_idx, pop_log, &do_print_state);
@@ -17681,24 +17681,6 @@ static int convert_ctx_accesses(struct bpf_verifier_env *env)
 			   insn->code == (BPF_ST | BPF_MEM | BPF_DW)) {
 			type = BPF_WRITE;
 		} else {
-			continue;
-		}
-
-		if (type == BPF_WRITE &&
-		    env->insn_aux_data[i + delta].nospec_v4_result) {
-			struct bpf_insn patch[] = {
-				*insn,
-				BPF_ST_NOSPEC_V4(),
-			};
-
-			cnt = ARRAY_SIZE(patch);
-			new_prog = bpf_patch_insn_data(env, i + delta, patch, cnt);
-			if (!new_prog)
-				return -ENOMEM;
-
-			delta    += cnt - 1;
-			env->prog = new_prog;
-			insn      = new_prog->insnsi + i + delta;
 			continue;
 		}
 
