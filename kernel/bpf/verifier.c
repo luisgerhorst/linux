@@ -4289,6 +4289,11 @@ static bool is_bpf_st_mem(struct bpf_insn *insn)
 	return BPF_CLASS(insn->code) == BPF_ST && BPF_MODE(insn->code) == BPF_MEM;
 }
 
+static int
+sanitize_speculative_path(struct bpf_verifier_env *env,
+			  const struct bpf_insn *insn,
+			  u32 next_idx, u32 curr_idx);
+
 /* check_stack_{read,write}_fixed_off functions track spill/fill of registers,
  * stack boundary and alignment are checked in check_mem_access()
  */
@@ -4332,8 +4337,12 @@ static int check_stack_write_fixed_off(struct bpf_verifier_env *env,
 			}
 		}
 
-		if (sanitize)
-			env->insn_aux_data[insn_idx].nospec_v4_result = true;
+		if (sanitize) {
+			err = sanitize_speculative_path(env, NULL, env->insn_idx + 1,
+											env->insn_idx);
+			if (err)
+				return err;
+		}
 	}
 
 	err = destroy_if_dynptr_stack_slot(env, state, spi);
