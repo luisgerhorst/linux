@@ -2765,6 +2765,7 @@ err:
 
 enum reg_arg_type {
 	SRC_OP,		/* register is used as source operand */
+	SRC_CT_OP,	/* register is used as source operand without influencing timing */
 	DST_OP,		/* register is used as destination operand */
 	DST_OP_NO_MARK	/* same as above, check only, don't mark */
 };
@@ -3611,11 +3612,16 @@ static int __check_reg_arg(struct bpf_verifier_env *env, struct bpf_reg_state *r
 
 	reg = &regs[regno];
 	rw64 = is_reg64(env, insn, regno, reg, t);
-	if (t == SRC_OP) {
+	if (t == SRC_OP || t == SRC_CT_OP) {
 		/* check whether register used as source operand can be read */
 		if (reg->type == NOT_INIT) {
-			verbose(env, "R%d !read_ok\n", regno);
-			return -EACCES;
+			if (t == SRC_CT_OP) {
+				/* can read the register, but dst. must be prohibited for non-CT ops too */
+				return 0;
+			} else {
+				verbose(env, "R%d !read_ok\n", regno);
+				return -EACCES;
+			}
 		}
 		/* We don't need to worry about FP liveness because it's read-only */
 		if (regno == BPF_REG_FP)
@@ -5268,9 +5274,11 @@ static int check_stack_read_fixed_off(struct bpf_verifier_env *env,
 					}
 					if (type == STACK_INVALID && (env->allow_uninit_stack && !env->cur_state->speculative))
 						continue;
-					verbose(env, "invalid read from stack off %d+%d size %d\n",
+					verbose(env, "invalid read from stack off %d+%d size %d, marking dst reg. as uninitialized\n",
 						off, i, size);
-					return -EACCES;
+					mark_reg_not_init(env, state->regs, dst_regno);
+					/* TODO: live marker needed? or return 0 here? */
+					return 0;
 				}
 
 				if (spill_cnt == size &&
@@ -5308,6 +5316,7 @@ static int check_stack_read_fixed_off(struct bpf_verifier_env *env,
 		}
 		mark_reg_read(env, reg, reg->parent, REG_LIVE_READ64);
 	} else {
+		bool reads_secret_data = false;
 		for (i = 0; i < size; i++) {
 			type = stype[(slot - i) % BPF_REG_SIZE];
 			if (type == STACK_MISC)
@@ -5316,9 +5325,10 @@ static int check_stack_read_fixed_off(struct bpf_verifier_env *env,
 				continue;
 			if (type == STACK_INVALID && (env->allow_uninit_stack && !env->cur_state->speculative))
 				continue;
-			verbose(env, "invalid read from stack off %d+%d size %d\n",
-				off, i, size);
-			return -EACCES;
+			verbose(env, "marking dst reg. as uninitialized\n");
+			mark_reg_not_init(env, state->regs, dst_regno);
+			/* TODO: ret ok or push_insn_history() needed? */
+			return 0;
 		}
 		mark_reg_read(env, reg, reg->parent, REG_LIVE_READ64);
 		if (dst_regno >= 0)
@@ -14948,6 +14958,11 @@ static int check_alu_op(struct bpf_verifier_env *env, struct bpf_insn *insn)
 	} else if (opcode == BPF_MOV) {
 
 		if (BPF_SRC(insn->code) == BPF_X) {
+			if (regs[insn->src_reg].type == NOT_INIT) {
+				mark_reg_not_init(env, regs, insn->dst_reg);
+				return 0;
+			}
+
 			if (BPF_CLASS(insn->code) == BPF_ALU) {
 				if ((insn->off != 0 && insn->off != 8 && insn->off != 16) ||
 				    insn->imm) {
@@ -15096,6 +15111,12 @@ static int check_alu_op(struct bpf_verifier_env *env, struct bpf_insn *insn)
 	} else {	/* all other ALU ops: and, sub, xor, add, ... */
 
 		if (BPF_SRC(insn->code) == BPF_X) {
+			if (regs[insn->dst_reg].type == NOT_INIT ||
+			    regs[insn->src_reg].type == NOT_INIT) {
+				mark_reg_not_init(env, regs, insn->dst_reg);
+				return 0;
+			}
+
 			if (insn->imm != 0 || insn->off > 1 ||
 			    (insn->off == 1 && opcode != BPF_MOD && opcode != BPF_DIV)) {
 				verbose(env, "BPF_ALU uses reserved fields\n");
@@ -15106,6 +15127,11 @@ static int check_alu_op(struct bpf_verifier_env *env, struct bpf_insn *insn)
 			if (err)
 				return err;
 		} else {
+			WARN_ON_ONCE(!BPF_SRC(insn->code) == BPF_K);
+			if (regs[insn->dst_reg].type == NOT_INIT) {
+				return 0;
+			}
+
 			if (insn->src_reg != BPF_REG_0 || insn->off > 1 ||
 			    (insn->off == 1 && opcode != BPF_MOD && opcode != BPF_DIV)) {
 				verbose(env, "BPF_ALU uses reserved fields\n");
@@ -19022,9 +19048,11 @@ static int do_check_insn(struct bpf_verifier_env *env, struct bpf_insn *insn,
 		}
 
 		/* check src1 operand */
-		err = check_reg_arg(env, insn->src_reg, SRC_OP);
+		err = check_reg_arg(env, insn->src_reg, SRC_CT_OP);
 		if (err)
 			return err;
+		/* TODO: mark stack slot as uninit, if reg.type==NOT_INIT */
+
 		/* check src2 operand */
 		err = check_reg_arg(env, insn->dst_reg, SRC_OP);
 		if (err)
