@@ -13103,11 +13103,6 @@ static int check_alu_op(struct bpf_verifier_env *env, struct bpf_insn *insn)
 			if (err)
 				return err;
 		} else {
-			BUG_ON(!BPF_SRC(insn->code) == BPF_K);
-			if (regs[insn->dst_reg].type == NOT_INIT) {
-				return 0;
-			}
-
 			if (insn->src_reg != BPF_REG_0 || insn->off != 0) {
 				verbose(env, "BPF_ALU uses reserved fields\n");
 				return -EINVAL;
