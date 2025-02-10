@@ -11923,6 +11923,8 @@ enum special_kfunc_type {
 };
 
 BTF_SET_START(special_kfunc_set)
+BTF_ID(func, bpf_map_lookup_u32_by_value)
+BTF_ID(func, bpf_map_lookup_elem_by_value)
 BTF_ID(func, bpf_obj_new_impl)
 BTF_ID(func, bpf_obj_drop_impl)
 BTF_ID(func, bpf_refcount_acquire_impl)
@@ -11956,6 +11958,8 @@ BTF_ID(func, bpf_remove_dentry_xattr)
 BTF_SET_END(special_kfunc_set)
 
 BTF_ID_LIST(special_kfunc_list)
+BTF_ID(func, bpf_map_lookup_u32_by_value)
+BTF_ID(func, bpf_map_lookup_elem_by_value)
 BTF_ID(func, bpf_obj_new_impl)
 BTF_ID(func, bpf_obj_drop_impl)
 BTF_ID(func, bpf_refcount_acquire_impl)
@@ -13400,8 +13404,18 @@ static int check_kfunc_call(struct bpf_verifier_env *env, struct bpf_insn *insn,
 		ptr_type = btf_type_skip_modifiers(desc_btf, t->type, &ptr_type_id);
 
 		if (meta.btf == btf_vmlinux && btf_id_set_contains(&special_kfunc_set, meta.func_id)) {
-			if (meta.func_id == special_kfunc_list[KF_bpf_obj_new_impl] ||
-			    meta.func_id == special_kfunc_list[KF_bpf_percpu_obj_new_impl]) {
+			if (meta.func_id == special_kfunc_list[KF_bpf_map_lookup_u32_by_value]) {
+				mark_reg_known_zero(env, regs, BPF_REG_0);
+				regs[BPF_REG_0].type = PTR_TO_BTF_ID | PTR_MAYBE_NULL;
+				regs[BPF_REG_0].btf = desc_bpf;
+				regs[BPF_REG_0].btf_id = 0; // TODO: map value btf id
+			} else if (meta.func_id == special_kfunc_list[KF_bpf_map_lookup_elem_by_value]) {
+				mark_reg_known_zero(env, regs, BPF_REG_0);
+				regs[BPF_REG_0].type = PTR_TO_BTF_ID | PTR_MAYBE_NULL;
+				regs[BPF_REG_0].btf = desc_bpf;
+				regs[BPF_REG_0].btf_id = 0; // TODO: map value btf id
+			else if (meta.func_id == special_kfunc_list[KF_bpf_obj_new_impl] ||
+				 meta.func_id == special_kfunc_list[KF_bpf_percpu_obj_new_impl]) {
 				struct btf_struct_meta *struct_meta;
 				struct btf *ret_btf;
 				u32 ret_btf_id;
