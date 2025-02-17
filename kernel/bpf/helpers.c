@@ -51,15 +51,17 @@ const struct bpf_func_proto bpf_map_lookup_elem_proto = {
 	.arg2_type	= ARG_PTR_TO_MAP_KEY,
 };
 
-__bpf_kfunc void *bpf_map_lookup_elem_by_value(struct bpf_map *p__map, __u64 key_in_reg) {
+__bpf_kfunc void *bpf_map_lookup_elem_by_value(struct bpf_map *map, __u64 key_in_reg) {
 	WARN_ON_ONCE(!rcu_read_lock_held() && !rcu_read_lock_bh_held());
+	// TODO: Assert sizeof(map->key)<sizeof(u64)
 	u64 key = key_in_reg;
-	return (unsigned long) p__map->ops->map_lookup_elem(map, &key);
+	return map->ops->map_lookup_elem(map, &key);
 }
 
-__bpf_kfunc u64 bpf_map_lookup_u32_by_value(struct bpf_map *p__map, __u64 key) {
+__bpf_kfunc u64 bpf_map_lookup_u32_by_value(struct bpf_map *map, __u64 key) {
 	WARN_ON_ONCE(!rcu_read_lock_held() && !rcu_read_lock_bh_held());
-	u32 *value = p__map->ops->map_lookup_elem(map, &key);
+	// TODO: Assert sizeof(map->value)<sizeof(u32) && sizeof(map->key)<sizeof(u64)
+	u32 *value = map->ops->map_lookup_elem(map, &key);
 	if (value)
 		return *value;
 	else
