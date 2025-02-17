@@ -11779,6 +11779,8 @@ enum kfunc_ptr_arg_type {
 };
 
 enum special_kfunc_type {
+	KF_bpf_map_lookup_u32_by_value,
+	KF_bpf_map_lookup_elem_by_value,
 	KF_bpf_obj_new_impl,
 	KF_bpf_obj_drop_impl,
 	KF_bpf_refcount_acquire_impl,
@@ -13294,8 +13296,8 @@ static int check_kfunc_call(struct bpf_verifier_env *env, struct bpf_insn *insn,
 			if (meta.func_id == special_kfunc_list[KF_bpf_map_lookup_elem_by_value]) {
 				mark_reg_known_zero(env, regs, BPF_REG_0);
 				regs[BPF_REG_0].type = PTR_TO_BTF_ID | PTR_MAYBE_NULL;
-				regs[BPF_REG_0].btf = map_ptr->btf;
-				regs[BPF_REG_0].btf_id = map_ptr->btf_value_type_id;
+				regs[BPF_REG_0].btf = r1_map_ptr->btf;
+				regs[BPF_REG_0].btf_id = r1_map_ptr->btf_value_type_id;
 			} else if (meta.func_id == special_kfunc_list[KF_bpf_obj_new_impl] ||
 				   meta.func_id == special_kfunc_list[KF_bpf_percpu_obj_new_impl]) {
 				struct btf *ret_btf;
