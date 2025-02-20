@@ -196,6 +196,16 @@ static void build_epilogue(struct jit_ctx *ctx)
 	__build_epilogue(ctx, false);
 }
 
+bool bpf_jit_bypass_spec_v1(void)
+{
+	return true;
+}
+
+bool bpf_jit_bypass_spec_v4(void)
+{
+	return true;
+}
+
 bool bpf_jit_supports_kfunc_call(void)
 {
 	return true;
@@ -1107,6 +1117,7 @@ static int build_insn(const struct bpf_insn *insn, struct jit_ctx *ctx, bool ext
 
 	/* Speculation barrier */
 	case BPF_ST | BPF_NOSPEC:
+		pr_warn_once("bpf_jit: Verifier requested a BPF_NOSPEC insn which is not implemented on LoongArch. This should not happen as bypass_spec_v1/v4 should always be true on LoongArch\n");
 		break;
 
 	default:
