@@ -49,14 +49,7 @@ const struct bpf_func_proto bpf_map_lookup_elem_proto = {
 	.arg2_type	= ARG_PTR_TO_MAP_KEY,
 };
 
-__bpf_kfunc void *bpf_map_lookup_elem_by_value(struct bpf_map *map, __u64 key_in_reg) {
-	WARN_ON_ONCE(!rcu_read_lock_held() && !rcu_read_lock_bh_held());
-	// TODO: Assert sizeof(map->key)<sizeof(u64)
-	u64 key = key_in_reg;
-	return map->ops->map_lookup_elem(map, &key);
-}
-
-__bpf_kfunc u64 bpf_map_lookup_u32_by_value(struct bpf_map *map, __u64 key) {
+__bpf_kfunc u64 bpf_map_lookup_u32_by_value(struct bpf_map *map, u64 key) {
 	WARN_ON_ONCE(!rcu_read_lock_held() && !rcu_read_lock_bh_held());
 	// TODO: Assert sizeof(map->value)<sizeof(u32) && sizeof(map->key)<sizeof(u64)
 	u32 *value = map->ops->map_lookup_elem(map, &key);
@@ -64,6 +57,13 @@ __bpf_kfunc u64 bpf_map_lookup_u32_by_value(struct bpf_map *map, __u64 key) {
 		return *value;
 	else
 		return U64_MAX;
+}
+
+__bpf_kfunc void *bpf_map_lookup_elem_by_value(struct bpf_map *map, u64 key_in_reg) {
+	WARN_ON_ONCE(!rcu_read_lock_held() && !rcu_read_lock_bh_held());
+	// TODO: Assert sizeof(map->key)<sizeof(u64)
+	u64 key = key_in_reg;
+	return map->ops->map_lookup_elem(map, &key);
 }
 
 BPF_CALL_4(bpf_map_update_elem, struct bpf_map *, map, void *, key,
@@ -2430,7 +2430,6 @@ BTF_SET8_START(generic_btf_ids)
 #ifdef CONFIG_KEXEC_CORE
 BTF_ID_FLAGS(func, crash_kexec, KF_DESTRUCTIVE)
 #endif
-BTF_ID_FLAGS(func, bpf_map_lookup_elem_by_value, KF_RET_NULL)
 BTF_ID_FLAGS(func, bpf_obj_new_impl, KF_ACQUIRE | KF_RET_NULL)
 BTF_ID_FLAGS(func, bpf_obj_drop_impl, KF_RELEASE)
 BTF_ID_FLAGS(func, bpf_refcount_acquire_impl, KF_ACQUIRE | KF_RET_NULL)
@@ -2469,6 +2468,8 @@ BTF_ID(func, bpf_cgroup_release)
 #endif
 
 BTF_SET8_START(common_btf_ids)
+BTF_ID_FLAGS(func, bpf_map_lookup_u32_by_value)
+BTF_ID_FLAGS(func, bpf_map_lookup_elem_by_value, KF_RET_NULL)
 BTF_ID_FLAGS(func, bpf_cast_to_kern_ctx)
 BTF_ID_FLAGS(func, bpf_rdonly_cast)
 BTF_ID_FLAGS(func, bpf_rcu_read_lock)
