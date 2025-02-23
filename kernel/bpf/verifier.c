@@ -13787,6 +13787,11 @@ static int sanitize_err(struct bpf_verifier_env *env,
 		WARN_ON_ONCE(env->cur_state->speculative);
 		aux->nospec_result = true;
 		aux->alu_state = 0;
+		/* TODO: must prevent caller from early return to fix this */
+		BUG_ON((dst_reg->type == CONST_PTR_TO_MAP ||
+			dst_reg->type == PTR_TO_MAP_KEY ||
+			dst_reg->type == PTR_TO_MAP_VALUE) &&
+		       !dst_reg->map_ptr);
 		return 0;
 	default:
 		WARN_ON_ONCE(reason >= 0);
