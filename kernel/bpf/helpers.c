@@ -51,23 +51,6 @@ const struct bpf_func_proto bpf_map_lookup_elem_proto = {
 	.arg2_type	= ARG_PTR_TO_MAP_KEY,
 };
 
-__bpf_kfunc u64 bpf_map_lookup_u32_by_value(struct bpf_map *map, u64 key) {
-	WARN_ON_ONCE(!rcu_read_lock_held() && !rcu_read_lock_bh_held());
-	// TODO: Assert sizeof(map->value)<sizeof(u32) && sizeof(map->key)<sizeof(u64)
-	u32 *value = map->ops->map_lookup_elem(map, &key);
-	if (value)
-		return *value;
-	else
-		return U64_MAX;
-}
-
-__bpf_kfunc void *bpf_map_lookup_elem_by_value(struct bpf_map *map, u64 key_in_reg) {
-	WARN_ON_ONCE(!rcu_read_lock_held() && !rcu_read_lock_bh_held());
-	// TODO: Assert sizeof(map->key)<sizeof(u64)
-	u64 key = key_in_reg;
-	return map->ops->map_lookup_elem(map, &key);
-}
-
 BPF_CALL_4(bpf_map_update_elem, struct bpf_map *, map, void *, key,
 	   void *, value, u64, flags)
 {
@@ -2140,11 +2123,6 @@ void bpf_rb_root_free(const struct btf_field *field, void *rb_root,
 
 __bpf_kfunc_start_defs();
 
-// TODO: u32_by_value
-__bpf_kfunc void *bpf_map_lookup_elem_by_value(void *p__map, __u64 key) {
-	return NULL;
-}
-
 __bpf_kfunc void *bpf_obj_new_impl(u64 local_type_id__k, void *meta__ign)
 {
 	struct btf_struct_meta *meta = meta__ign;
@@ -2778,6 +2756,24 @@ __bpf_kfunc int bpf_dynptr_clone(const struct bpf_dynptr *p,
 	*clone = *ptr;
 
 	return 0;
+}
+
+__bpf_kfunc u64 bpf_map_lookup_u32_by_value(void *p__map, u64 key) {
+	struct bpf_map *map = p__map;
+	WARN_ON_ONCE(!rcu_read_lock_held() && !rcu_read_lock_bh_held());
+	// TODO: Assert sizeof(map->value)<sizeof(u32) && sizeof(map->key)<sizeof(u64) && (map->map_type != BPF_MAP_TYPE_*
+	u32 *value = map->ops->map_lookup_elem(map, &key);
+	if (value)
+		return *value;
+	else
+		return U64_MAX;
+}
+
+__bpf_kfunc void *bpf_map_lookup_elem_by_value(void *p__map, u64 key) {
+	struct bpf_map *map = p__map;
+	WARN_ON_ONCE(!rcu_read_lock_held() && !rcu_read_lock_bh_held());
+	// TODO: Assert sizeof(map->key)<sizeof(u64)
+	return map->ops->map_lookup_elem(map, &key);
 }
 
 __bpf_kfunc void *bpf_cast_to_kern_ctx(void *obj)
