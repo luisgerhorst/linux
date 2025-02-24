@@ -13478,7 +13478,7 @@ static int check_kfunc_call(struct bpf_verifier_env *env, struct bpf_insn *insn,
 						return err;
 				}
 
-				struct_meta = btf_find_struct_meta(ret_btf, ret_btf_id);
+				struct btf_struct_meta *struct_meta = btf_find_struct_meta(ret_btf, ret_btf_id);
 				if (meta.func_id == special_kfunc_list[KF_bpf_percpu_obj_new_impl]) {
 					if (!__btf_type_is_scalar_struct(env, ret_btf, ret_t, 0)) {
 						verbose(env, "bpf_percpu_obj_new type ID argument must be of a struct of scalars\n");
