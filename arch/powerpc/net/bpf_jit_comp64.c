@@ -789,6 +789,8 @@ emit_clear:
 					!security_ftr_enabled(SEC_FTR_STF_BARRIER))
 				break;
 
+			/* TODO: do all these include nospec_v1? */
+			/* nospec_v1 may be instr = PPC_RAW_ORI(_R31, _R31, 0); /\* speculation barrier *\/ */
 			switch (stf_barrier) {
 			case STF_BARRIER_EIEIO:
 				EMIT(PPC_RAW_EIEIO() | 0x02000000);
