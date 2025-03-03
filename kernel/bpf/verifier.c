@@ -13419,9 +13419,8 @@ static int check_kfunc_call(struct bpf_verifier_env *env, struct bpf_insn *insn,
 		if (meta.btf == btf_vmlinux && btf_id_set_contains(&special_kfunc_set, meta.func_id)) {
 			if (meta.func_id == special_kfunc_list[KF_bpf_map_lookup_elem_by_value]) {
 				mark_reg_known_zero(env, regs, BPF_REG_0);
-				regs[BPF_REG_0].type = PTR_TO_BTF_ID | PTR_MAYBE_NULL;
-				regs[BPF_REG_0].btf = r1_map_ptr->btf;
-				regs[BPF_REG_0].btf_id = r1_map_ptr->btf_value_type_id;
+				regs[BPF_REG_0].type = PTR_TO_MAP_VALUE | PTR_MAYBE_NULL;
+				regs[BPF_REG_0].map_ptr = r1_map_ptr;
 			} else if (meta.func_id == special_kfunc_list[KF_bpf_obj_new_impl] ||
 				   meta.func_id == special_kfunc_list[KF_bpf_percpu_obj_new_impl]) {
 				struct btf *ret_btf;
