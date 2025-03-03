@@ -4986,7 +4986,7 @@ static void check_fastcall_stack_contract(struct bpf_verifier_env *env,
 	}
 }
 
-static int
+static struct bpf_verifier_state *
 sanitize_speculative_path(struct bpf_verifier_env *env,
 			  const struct bpf_insn *insn,
 			  u32 next_idx, u32 curr_idx);
