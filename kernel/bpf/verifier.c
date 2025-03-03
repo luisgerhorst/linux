@@ -13390,7 +13390,10 @@ static int check_kfunc_call(struct bpf_verifier_env *env, struct bpf_insn *insn,
 	struct bpf_map *r1_map_ptr = NULL;
 	if (meta.func_id == special_kfunc_list[KF_bpf_map_lookup_elem_by_value]) {
 		r1_map_ptr = regs[BPF_REG_1].map_ptr;
-		BUG_ON(!r1_map_ptr || !r1_map_ptr->btf);
+		if (!r1_map_ptr || regs[BPF_REG_1].type != CONST_PTR_TO_MAP) {
+			verbose(env, "map_lookup_elem_by_value() requires map_ptr as first argument (r1)\n");
+			return -EINVAL;
+		}
 	}
 
 	for (i = 0; i < CALLER_SAVED_REGS; i++)
