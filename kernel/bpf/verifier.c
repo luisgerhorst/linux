@@ -13424,6 +13424,18 @@ static int check_kfunc_call(struct bpf_verifier_env *env, struct bpf_insn *insn,
 				mark_reg_known_zero(env, regs, BPF_REG_0);
 				regs[BPF_REG_0].type = PTR_TO_MAP_VALUE | PTR_MAYBE_NULL;
 				regs[BPF_REG_0].map_ptr = r1_map_ptr;
+
+				// For inlining
+				if (!insn_aux->map_ptr_state.map_ptr)
+					bpf_map_ptr_store(
+						insn_aux, r1_map_ptr,
+						!r1_map_ptr->bypass_spec_v1,
+						false);
+				else if (insn_aux->map_ptr_state.map_ptr != r1_map_ptr)
+					bpf_map_ptr_store(
+						insn_aux, r1_map_ptr,
+						!r1_map_ptr->bypass_spec_v1,
+						true);
 			} else if (meta.func_id == special_kfunc_list[KF_bpf_obj_new_impl] ||
 				   meta.func_id == special_kfunc_list[KF_bpf_percpu_obj_new_impl]) {
 				struct btf *ret_btf;
@@ -21261,8 +21273,29 @@ static int fixup_kfunc_call(struct bpf_verifier_env *env, struct bpf_insn *insn,
 		insn->imm = BPF_CALL_IMM(desc->addr);
 	if (insn->off)
 		return 0;
-	if (desc->func_id == special_kfunc_list[KF_bpf_obj_new_impl] ||
-	    desc->func_id == special_kfunc_list[KF_bpf_percpu_obj_new_impl]) {
+	if (desc->func_id == special_kfunc_list[KF_bpf_map_lookup_elem_by_value]) {
+		struct bpf_insn_aux_data *aux = &env->insn_aux_data[insn_idx];
+		if (bpf_map_ptr_poisoned(aux))
+				goto by_value_no_patch;
+		struct bpf_map *map_ptr = aux->map_ptr_state.map_ptr;
+		const struct bpf_map_ops *ops = map_ptr->ops;
+		if (ops->map_gen_lookup_by_value) {
+			*cnt = ops->map_gen_lookup_by_value(map_ptr, insn_buf);
+			if (*cnt == -EOPNOTSUPP) {
+				goto by_value_no_patch;
+			} else if (*cnt <= 0 || *cnt >= INSN_BUF_SIZE) {
+				verbose(env, "bpf verifier is misconfigured\n");
+				return -EFAULT;
+			}
+			return 0;
+		}
+by_value_no_patch:
+		insn_buf[0] = *insn;
+		*cnt = 1;
+		return 0;
+	} else if (desc->func_id == special_kfunc_list[KF_bpf_obj_new_impl] ||
+		   desc->func_id ==
+			   special_kfunc_list[KF_bpf_percpu_obj_new_impl]) {
 		struct btf_struct_meta *kptr_struct_meta = env->insn_aux_data[insn_idx].kptr_struct_meta;
 		struct bpf_insn addr[2] = { BPF_LD_IMM64(BPF_REG_2, (long)kptr_struct_meta) };
 		u64 obj_new_size = env->insn_aux_data[insn_idx].obj_new_size;
