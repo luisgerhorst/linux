@@ -7809,6 +7809,7 @@ static int check_stack_range_initialized(
 			 * speculative offset using a nospec before the
 			 * dereference op.
 			 */
+			verbose(env, "nospec: variable_stack_access\n");
 			cur_aux(env)->nospec = true;
 		}
 		/* Only initialized buffer on stack is allowed to be accessed
@@ -13773,7 +13774,8 @@ static bool can_skip_alu_sanitation(const struct bpf_verifier_env *env,
 	return env->bypass_spec_v1 || BPF_SRC(insn->code) == BPF_K;
 }
 
-static int update_alu_sanitation_state(struct bpf_insn_aux_data *aux,
+static int update_alu_sanitation_state(struct bpf_verifier_env *env,
+				       struct bpf_insn_aux_data *aux,
 				       u32 alu_state, u32 alu_limit)
 {
 	/* If we arrived here from different branches with different
@@ -13783,6 +13785,7 @@ static int update_alu_sanitation_state(struct bpf_insn_aux_data *aux,
 	    (aux->alu_state != alu_state ||
 	     aux->alu_limit != alu_limit)) {
 		/* Tried to perform alu op from different maps, paths or scalars */
+		verbose(env, "nospec: alu_sanitization, path, result\n");
 		aux->nospec_result = true;
 		aux->alu_state = 0;
 		return 0;
@@ -13802,7 +13805,7 @@ static int sanitize_val_alu(struct bpf_verifier_env *env,
 	if (can_skip_alu_sanitation(env, insn))
 		return 0;
 
-	return update_alu_sanitation_state(aux, BPF_ALU_NON_POINTER, 0);
+	return update_alu_sanitation_state(env, aux, BPF_ALU_NON_POINTER, 0);
 }
 
 static bool sanitize_needed(u8 opcode)
@@ -13870,6 +13873,7 @@ static int sanitize_ptr_alu(struct bpf_verifier_env *env,
 		    (off_reg->smin_value < 0) != (off_reg->smax_value < 0)) {
 			/* Register has unknown scalar with mixed signed bounds. */
 			aux->nospec_result = true;
+			verbose(env, "nospec: alu_sanitization, bounds, result\n");
 			aux->alu_state = 0;
 			return 0;
 		}
@@ -13882,6 +13886,7 @@ static int sanitize_ptr_alu(struct bpf_verifier_env *env,
 	if (err) {
 		WARN_ON_ONCE(err != -ENOTSUPP);
 		aux->nospec_result = true;
+		verbose(env, "nospec: alu_sanitization, type_limit, result\n");
 		aux->alu_state = 0;
 		return 0;
 	}
@@ -13905,7 +13910,7 @@ static int sanitize_ptr_alu(struct bpf_verifier_env *env,
 			env->explore_alu_limits = true;
 	}
 
-	err = update_alu_sanitation_state(aux, alu_state, alu_limit);
+	err = update_alu_sanitation_state(env, aux, alu_state, alu_limit);
 	if (err < 0)
 		return err;
 do_sim:
@@ -19509,6 +19514,7 @@ static int do_check(struct bpf_verifier_env *env)
 			 * insn that would have been unsafe to execute.
 			 */
 			cur_aux(env)->nospec = true;
+			verbose(env, "nospec: speculative_path_unsafe, %d\n", err);
 
 			goto nospec_or_safe_state_found;
 		} else if (err) {
