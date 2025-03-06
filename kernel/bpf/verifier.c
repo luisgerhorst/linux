@@ -13735,7 +13735,7 @@ static bool check_reg_sane_offset(struct bpf_verifier_env *env,
 	return true;
 }
 
-static int retrieve_ptr_limit(const struct bpf_reg_state *ptr_reg,
+static int retrieve_ptr_limit(struct bpf_verifier_env *env, const struct bpf_reg_state *ptr_reg,
 			      u32 *alu_limit, bool mask_to_left)
 {
 	u32 max = 0, ptr_limit = 0;
@@ -13758,12 +13758,15 @@ static int retrieve_ptr_limit(const struct bpf_reg_state *ptr_reg,
 		break;
 	default:
 		/* Register has pointer with unsupported alu operation. */
+		verbose(env, "nospec: alu_sanitization, type, result, ptr_reg->type=%d\n", ptr_reg->type);
 		return -ENOTSUPP;
 	}
 
 	/* Register tried access beyond pointer bounds. */
-	if (ptr_limit >= max)
+	if (ptr_limit >= max) {
+		verbose(env, "nospec: alu_sanitization, limit, result\n");
 		return -ENOTSUPP;
+	}
 	*alu_limit = ptr_limit;
 	return 0;
 }
@@ -13882,11 +13885,10 @@ static int sanitize_ptr_alu(struct bpf_verifier_env *env,
 				     (opcode == BPF_SUB && !off_is_neg);
 	}
 
-	err = retrieve_ptr_limit(ptr_reg, &alu_limit, info->mask_to_left);
+	err = retrieve_ptr_limit(env, ptr_reg, &alu_limit, info->mask_to_left);
 	if (err) {
 		WARN_ON_ONCE(err != -ENOTSUPP);
 		aux->nospec_result = true;
-		verbose(env, "nospec: alu_sanitization, type_limit, result\n");
 		aux->alu_state = 0;
 		return 0;
 	}
