@@ -5027,6 +5027,9 @@ static int check_stack_write_fixed_off(struct bpf_verifier_env *env,
 			u8 type = state->stack[spi].slot_type[i];
 
 			if (type != STACK_MISC && type != STACK_ZERO) {
+				/* TODO: Set for all types to avoid having to
+				 * assume that there is pec. scalar
+				 * confusion? */
 				sanitize = true;
 				break;
 			}
@@ -7475,7 +7478,11 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 		if (type_may_be_null(reg->type)) {
 			verbose(env, "R%d invalid mem access '%s'\n", regno,
 				reg_type_str(env, reg->type));
-			return -EACCES;
+			if (env->cur_state->speculative) {
+				BUG_ON(off >= PAGE_SIZE || !tnum_is_const(reg->var_off));
+				verbose(env, "allowing speculative read/write to NULL page, will abort speculation\n");
+				return -EINTR;
+			}
 		}
 
 		if (t == BPF_WRITE && rdonly_mem) {
@@ -7629,6 +7636,11 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 	} else if (reg->type == PTR_TO_ARENA) {
 		if (t == BPF_READ && value_regno >= 0)
 			mark_reg_unknown(env, regs, value_regno);
+	} else if (reg->type == SCALAR_VALUE && t == BPF_READ && env->cur_state->speculative) {
+		verbose(env, "Allowing speculative read from arbitrary memory but marking dst R%d as uninitialized.\n", value_regno);
+		mark_reg_not_init(env, regs, value_regno);
+		/* Can not allow writes to arbitrary mem., because it could leak
+		 * a ptr to a speculatively readable memory location. */
 	} else {
 		verbose(env, "R%d invalid mem access '%s'\n", regno,
 			reg_type_str(env, reg->type));
@@ -13756,6 +13768,10 @@ static int retrieve_ptr_limit(struct bpf_verifier_env *env, const struct bpf_reg
 			     ptr_reg->smin_value :
 			     ptr_reg->umax_value) + ptr_reg->off;
 		break;
+	case PTR_TO_PACKET:
+		/* TODO: Enforce packet_end mask, see
+		 * https://patchwork.kernel.org/project/linux-kselftest/patch/20230913122827.91591-1-gerhorst@amazon.de/#25516346 */
+		return -EINVAL;
 	default:
 		/* Register has pointer with unsupported alu operation. */
 		verbose(env, "nospec: alu_sanitization, type, result, ptr_reg->type=%d\n", ptr_reg->type);
@@ -13886,9 +13902,13 @@ static int sanitize_ptr_alu(struct bpf_verifier_env *env,
 	}
 
 	err = retrieve_ptr_limit(env, ptr_reg, &alu_limit, info->mask_to_left);
-	if (err) {
-		WARN_ON_ONCE(err != -ENOTSUPP);
+	if (err == -ENOTSUPP) {
 		aux->nospec_result = true;
+		aux->alu_state = 0;
+		return 0;
+	} else if (err) {
+		/* Not needed. */
+		WARN_ON_ONCE(err != -EINVAL);
 		aux->alu_state = 0;
 		return 0;
 	}
@@ -19508,6 +19528,9 @@ static int do_check(struct bpf_verifier_env *env)
 			continue;
 		} else if (err == ALL_PATHS_CHECKED) {
 			break;
+		} else if (err == -EINTR && state->speculative) {
+			/* Insn will abort speculation (e.g., NULL ptr deref). */
+			goto nospec_or_safe_state_found;
 		} else if (error_recoverable_with_nospec(err) && state->speculative) {
 			WARN_ON_ONCE(env->bypass_spec_v1 && env->bypass_spec_v4);
 			WARN_ON_ONCE(env->cur_state != state);
