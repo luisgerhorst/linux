@@ -13756,7 +13756,7 @@ static bool check_reg_sane_offset(struct bpf_verifier_env *env,
 }
 
 static int retrieve_ptr_limit(struct bpf_verifier_env *env, const struct bpf_reg_state *ptr_reg,
-			      u32 *alu_limit, bool mask_to_left)
+			      u32 *alu_limit, u32 *alu_max, bool mask_to_left)
 {
 	u32 max = 0, ptr_limit = 0;
 
@@ -13792,6 +13792,8 @@ static int retrieve_ptr_limit(struct bpf_verifier_env *env, const struct bpf_reg
 		return -ENOTSUPP;
 	}
 	*alu_limit = ptr_limit;
+	/* TODO: Wouln't it make more sense to track the minimum ptr size (max)? */
+	*alu_max = max;
 	return 0;
 }
 
@@ -13803,8 +13805,25 @@ static bool can_skip_alu_sanitation(const struct bpf_verifier_env *env,
 
 static int update_alu_sanitation_state(struct bpf_verifier_env *env,
 				       struct bpf_insn_aux_data *aux,
-				       u32 alu_state, u32 alu_limit)
+				       u32 alu_state, u32 alu_limit, u32 alu_max)
 {
+	if (aux->alu_state &&
+	    (aux->alu_state & ~BPF_ALU_IMMEDIATE) == (alu_state & ~BPF_ALU_IMMEDIATE)) {
+		aux->alu_state = aux->alu_state & ~BPF_ALU_IMMEDIATE;
+		if (max(aux->alu_limit, alu_limit) > min(aux->alu_max, alu_max)) {
+			verbose(env,
+				"nospec: alu_sanitization, imm_paths, result, alu_state %d %d, alu_limit %d %d, alu_max %d %d\n",
+				aux->alu_state, alu_state, aux->alu_limit,
+				alu_limit, aux->alu_max, alu_max);
+			aux->nospec_result = true;
+			aux->alu_state = 0;
+		} else {
+			aux->alu_limit = max(aux->alu_limit, alu_limit);
+			aux->alu_max = min(aux->alu_max, alu_max);
+		}
+		return 0;
+	}
+
 	/* If we arrived here from different branches with different
 	 * state or limits to sanitize, then this won't work.
 	 */
@@ -13812,7 +13831,9 @@ static int update_alu_sanitation_state(struct bpf_verifier_env *env,
 	    (aux->alu_state != alu_state ||
 	     aux->alu_limit != alu_limit)) {
 		/* Tried to perform alu op from different maps, paths or scalars */
-		verbose(env, "nospec: alu_sanitization, path, result\n");
+		verbose(env, "nospec: alu_sanitization, path, result, alu_state %d != %d || alu_limit %d != %d\n",
+			aux->alu_state, alu_state,
+			aux->alu_limit, alu_limit);
 		aux->nospec_result = true;
 		aux->alu_state = 0;
 		return 0;
@@ -13821,6 +13842,7 @@ static int update_alu_sanitation_state(struct bpf_verifier_env *env,
 	/* Corresponding fixup done in do_misc_fixups(). */
 	aux->alu_state = alu_state;
 	aux->alu_limit = alu_limit;
+	aux->alu_max = alu_max;
 	return 0;
 }
 
@@ -13832,7 +13854,7 @@ static int sanitize_val_alu(struct bpf_verifier_env *env,
 	if (can_skip_alu_sanitation(env, insn))
 		return 0;
 
-	return update_alu_sanitation_state(env, aux, BPF_ALU_NON_POINTER, 0);
+	return update_alu_sanitation_state(env, aux, BPF_ALU_NON_POINTER, 0, 0);
 }
 
 static bool sanitize_needed(u8 opcode)
@@ -13909,7 +13931,8 @@ static int sanitize_ptr_alu(struct bpf_verifier_env *env,
 				     (opcode == BPF_SUB && !off_is_neg);
 	}
 
-	err = retrieve_ptr_limit(env, ptr_reg, &alu_limit, info->mask_to_left);
+	u32 alu_max;
+	err = retrieve_ptr_limit(env, ptr_reg, &alu_limit, &alu_max, info->mask_to_left);
 	if (err == -ENOTSUPP) {
 		aux->nospec_result = true;
 		aux->alu_state = 0;
@@ -13940,7 +13963,7 @@ static int sanitize_ptr_alu(struct bpf_verifier_env *env,
 			env->explore_alu_limits = true;
 	}
 
-	err = update_alu_sanitation_state(env, aux, alu_state, alu_limit);
+	err = update_alu_sanitation_state(env, aux, alu_state, alu_limit, alu_max);
 	if (err < 0)
 		return err;
 do_sim:
