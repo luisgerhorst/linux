@@ -7636,8 +7636,16 @@ static int check_mem_access(struct bpf_verifier_env *env, int insn_idx, u32 regn
 	} else if (reg->type == PTR_TO_ARENA) {
 		if (t == BPF_READ && value_regno >= 0)
 			mark_reg_unknown(env, regs, value_regno);
-	} else if (reg->type == SCALAR_VALUE && t == BPF_READ && env->cur_state->speculative) {
-		verbose(env, "Allowing speculative read from arbitrary memory but marking dst R%d as uninitialized.\n", value_regno);
+	} else if (reg->type == SCALAR_VALUE && env->cur_state->speculative && reg->umax_value < PAGE_SIZE/2) {
+		BUG_ON(off >= PAGE_SIZE/2 || !tnum_is_const(reg->var_off));
+		verbose(env,
+			"allowing speculative read/write to NULL page, will abort speculation\n");
+		return -EINTR;
+	} else if (reg->type == SCALAR_VALUE && t == BPF_READ &&
+		   env->cur_state->speculative) {
+		verbose(env,
+			"Allowing speculative read from arbitrary memory but marking dst R%d as uninitialized.\n",
+			value_regno);
 		mark_reg_not_init(env, regs, value_regno);
 		/* Can not allow writes to arbitrary mem., because it could leak
 		 * a ptr to a speculatively readable memory location. */
