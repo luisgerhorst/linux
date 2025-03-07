@@ -14997,6 +14997,10 @@ static int adjust_reg_min_max_vals(struct bpf_verifier_env *env,
 				if (opcode == BPF_SUB && (env->allow_ptr_leaks && !env->cur_state->speculative)) {
 					mark_reg_unknown(env, regs, insn->dst_reg);
 					return 0;
+				} else if (opcode == BPF_SUB || opcode == BPF_ADD) {
+					verbose(env, "marking dst reg. R%d as uninitialized to forbid reads of pointer-alu result\n", insn->dst_reg);
+					mark_reg_not_init(env, regs, insn->dst_reg);
+					return 0;
 				}
 				verbose(env, "R%d pointer %s pointer prohibited\n",
 					insn->dst_reg,
